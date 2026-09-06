@@ -1,0 +1,19 @@
+# Bundle layer applied when this package is listed in a profile's
+# `dsh.profile.bundles`. Install:
+#   dsh plugin --profile web add ./dsh-llm-minimax-oauth
+#
+# This plugin registers the `minimax-portal` provider route on top of DSH's
+# LLM runtime via a custom `LlmAdapter`. The user authorizes via browser once
+# (device-code PKCE); tokens are persisted to
+# `$DSH_HOME/minimax-oauth.json` and serialized into the
+# `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` env var so the adapter can
+# authenticate Anthropic Messages requests with
+# `Authorization: Bearer <access_token>` against
+# `https://api.minimax.io/anthropic/v1/messages`.
+#
+# The built-in `pi-ai` `minimax` route (API-key path) is unchanged and stays
+# available for users who prefer to authenticate via `MINIMAX_API_KEY`.
+- insert:
+    - id: llm-minimax-oauth
+      name: dsh-llm-minimax-oauth
+      inject: [llm, webServer]

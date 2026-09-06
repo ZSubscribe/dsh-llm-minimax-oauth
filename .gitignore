@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+lib/
+*.tsbuildinfo
+tsconfig.base.json
+
+# Workspace artifacts (from monorepo origin — not part of standalone plugin)
+pnpm-workspace.yaml
+pnpm-lock.yaml
+
+# Test artifacts
+coverage/
+*.lcov
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
