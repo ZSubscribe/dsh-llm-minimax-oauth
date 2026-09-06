@@ -1,0 +1,9 @@
+# Screenshot assets for README.md (and any future docs).
+#
+# Each path referenced by README.md must have a real PNG here, or the
+# README renders broken-image icons. Maintainers should drop fresh
+# captures from a real DSH Web session into the matching path and commit.
+#
+# Required (referenced by README.md):
+#   settings-logged-in.png   — Settings → MiniMax OAuth panel, post-login state
+#   browser-authorize.png    — MiniMax browser authorization page (user_code entry)
