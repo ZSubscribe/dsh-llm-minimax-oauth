@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { MiniMaxProviderProfile } from './const.ts'
+import type { MiniMaxProviderProfile } from '../const.ts'
 
 export interface OauthSectionProps {
   /** Optional override for the panel position relative to other Settings rows. */

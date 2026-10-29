@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Smoke test: verify the adapter actually emits `Authorization: Bearer ...`
+// Smoke test: verify the adapter actually emits `Authorization: Bearer <access_token>`
 // against `https://api.minimax.io/anthropic/v1/messages`.
 //
 // Usage: node tests/smoke.mjs
@@ -70,7 +70,7 @@ const errors = []
 if (capturedUrl !== 'https://api.minimax.io/anthropic/v1/messages') {
   errors.push(`URL wrong: ${capturedUrl}`)
 }
-if (capturedHeaders.authorization !== `Bearer smoke-test-fake-access-token`) {
+if (capturedHeaders.authorization !== 'Bearer smoke-test-fake-access-token') {
   errors.push(`Auth header wrong: ${capturedHeaders.authorization}`)
 }
 if (capturedHeaders['anthropic-version'] !== '2023-06-01') {

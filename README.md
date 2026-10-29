@@ -1,7 +1,7 @@
 # dsh-llm-minimax-oauth
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.1.1--rc.2-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.3-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-green)](https://nodejs.org)
 [![OAuth](https://img.shields.io/badge/OAuth-2.0%20PKCE-blue)](https://datatracker.ietf.org/doc/html/rfc8628)
 [![Platform](https://img.shields.io/badge/MiniMax-Global-orange)](https://platform.minimax.io)
@@ -25,6 +25,7 @@ a separate route id so the two authentication channels never collide.
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
+- [Harness compatibility](#harness-compatibility)
 - [Install](#install)
 - [Use](#use)
 - [Models unlocked](#models-unlocked)
@@ -39,13 +40,41 @@ a separate route id so the two authentication channels never collide.
 
 ## Prerequisites
 
-- **DeepSeek Harness** `0.1.1-rc.2` or compatible (any release exposing the
-  `llm` and `webServer` cordis services)
+- **DeepSeek Harness** `0.2.1-rc.3` (pinned exactly, matching the DSH
+  `0.2.1` release convention where the harness packages pin their peers to
+  an exact version)
 - **Node.js** `^22.19.0` or `>=24.0.0`
 - A MiniMax account with an active **Coding Plan** or **Credits** balance
   ([platform.minimax.io](https://platform.minimax.io))
 - A modern browser with popups enabled (or willingness to copy the
   authorization URL manually — see [Troubleshooting](#browser-does-not-open-automatically))
+
+## Harness compatibility
+
+This plugin targets **DeepSeek Harness `0.2.1-rc.3`**. The `0.2.x` line
+changed the LLM message model, and the adapter is written against the new
+vocabulary:
+
+| Harness fact | `0.1.x` | `0.2.x` (this plugin) |
+| --- | --- | --- |
+| System prompt | `GenerateOptions.system` | a leading `role: 'system'` message; `options.system` is only set by one-shot callers |
+| Tool result | a `tool-result` content block inside a user message | its own `role: 'tool'` message carrying `toolCallId` and `isError` |
+| Tool-call id brand | `CallId` | `ToolCallId` |
+| Content blocks | text / reasoning / image / tool-call / tool-result | text / reasoning / image / file / tool-call / tool-addition / tool-removal |
+| Tool declarations | flat `tools` list | flat `tools` list, plus `deferLoading` markers that the route must not put on the wire |
+
+Consequences for this plugin's request serialization:
+
+- The Anthropic Messages format has exactly one system slot, so the request
+  system prompt and every system-role message are merged into it.
+- A tool result becomes an Anthropic `tool_result` part inside a `user`
+  message, which is what the Anthropic wire format expects.
+- Tool-change blocks (`tool-addition` / `tool-removal`) live in developer
+  messages. This route declares no `toolUpdate`, so the harness sends the
+  complete tool list on every request and the developer blocks carry no
+  extra information — they are dropped.
+- A tool declared with `deferLoading` is not part of the wire declaration
+  list, matching the built-in `pi-ai` adapter.
 
 ## Install
 
@@ -102,10 +131,17 @@ agent-default-model:
 ## Models unlocked
 
 Provider `minimax-portal` (custom adapter in this plugin) at
-`https://api.minimax.io/anthropic`, exposing `MiniMax-M3` (1M context,
-vision, reasoning), `MiniMax-M2.7`, and `MiniMax-M2.7-highspeed`.
+`https://api.minimax.io/anthropic`, exposing `MiniMax-M3` (1M context),
+`MiniMax-M3.1-Flash` (1M context), `MiniMax-M2.7`, and
+`MiniMax-M2.7-highspeed`.
 
 `MiniMax-M3` is the default and recommended for the Coding Plan.
+
+The route is **text-only**. The adapter has no access to the harness
+attachment service, so it declares `inputModalities: ['text']` and the
+harness projects attached images into deterministic text placeholders
+instead of failing the request. An inline image never reaches the
+provider.
 
 ## Screenshots
 
@@ -273,6 +309,9 @@ import {
   refreshAccessToken,   // force-refresh using stored refresh_token
   // Token envelope serialization (for env var mirroring)
   readSerializedToken,
+  // Brand constructors for the harness message vocabulary
+  MessageId,        // brand a message identity
+  ToolCallId,       // brand a tool-call correlation
   // Constants
   MINIMAX_PROVIDER_ID, MINIMAX_INFERENCE_ENV_VAR,
   MINIMAX_DEFAULT_MODEL_CATALOG, ...,

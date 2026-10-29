@@ -1,7 +1,7 @@
 {
   "name": "dsh-llm-minimax-oauth",
   "description": "DeepSeek Harness plugin: MiniMax OAuth (Coding Plan) via browser login",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -73,13 +73,14 @@
     "pkce"
   ],
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-launch-environment": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.1-rc.2"
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-launch-environment": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.3"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1"
+    "@earendil-works/pi-ai": "^1.1.0"
   },
   "bin": {
     "dsh-minimax-login": "./bin/login.mjs"
@@ -92,6 +93,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/react": "^18.3.12",
     "react": "^18.3.1",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3"

@@ -41,4 +41,14 @@ export type { DeviceCodeResponse, PollOptions, AuthorizationResult, Authorizatio
 export { MiniMaxAdapter, readSerializedToken } from './adapter.ts'
 export type { SerializedToken } from './adapter.ts'
 
+/**
+ * Brand constructors for the harness message vocabulary.
+ *
+ * Re-exported so a plugin author (or a test) can build a valid message
+ * without depending on `@deepseek-ai/dsh-llm` directly: `MessageId` brands a
+ * message identity and `ToolCallId` brands the tool-call correlation that
+ * the `0.2.x` message model carries on `role: 'tool'` messages.
+ */
+export { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
+
 export { apply } from './apply.ts'

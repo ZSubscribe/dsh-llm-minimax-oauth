@@ -74,19 +74,31 @@ export interface MiniMaxCatalogModel {
  * Default model catalog for MiniMax Global Coding Plan OAuth.
  *
  * The list is sourced from `pi-ai`'s built-in `minimax` provider data file
- * (verified against `@earendil-works/pi-ai@0.82.1/dist/providers/data/minimax.json`)
+ * (verified against `@earendil-works/pi-ai@1.1.0/dist/providers/data/minimax.json`)
  * and from the OpenClaw reference catalog
  * (`extensions/minimax/provider-models.ts`). Adding or removing models here
  * is a single-source-of-truth change: `listModels()` and `resolveModel()`
  * both read from this array.
+ *
+ * The catalog advertises the *provider's* context window and output cap.
+ * The route itself is text-only: `MiniMaxAdapter` has no access to the
+ * attachment service, so it declares `inputModalities: ['text']` and the
+ * harness projects images to deterministic text instead of failing the call.
  */
 export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
   {
     id: 'MiniMax-M3',
     name: 'MiniMax M3',
-    description: 'Latest MiniMax model with vision and 1M context (recommended).',
+    description: 'Latest MiniMax flagship model, 1M context (recommended).',
     contextWindow: 1_000_000,
-    maxTokens: 128_000,
+    maxTokens: 524_288,
+  },
+  {
+    id: 'MiniMax-M3.1-Flash',
+    name: 'MiniMax M3.1 Flash',
+    description: 'Lower-cost M3.1 variant, 1M context.',
+    contextWindow: 1_000_000,
+    maxTokens: 524_288,
   },
   {
     id: 'MiniMax-M2.7',

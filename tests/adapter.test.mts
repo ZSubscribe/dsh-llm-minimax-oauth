@@ -6,6 +6,13 @@
  * stubbed `fetch`, then drive the resulting SSE stream through the harness
  * `StreamChunk` protocol. The tests never hit a real MiniMax endpoint and
  * never use a real OAuth token.
+ *
+ * Harness vocabulary exercised here (DSH `0.2.1-rc.3`):
+ *   - `GenerateOptions.messages` is a role-tagged union: a system prompt
+ *     arrives as a leading `role: 'system'` message, a tool result as its own
+ *     `role: 'tool'` message, and tool-change blocks as a `role: 'developer'`
+ *     message.
+ *   - Tool-call correlation is branded as `ToolCallId`.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -15,6 +22,8 @@ import {
   DEFAULT_PROVIDER_PROFILES,
   MINIMAX_INFERENCE_ENV_VAR,
   MINIMAX_PROVIDER_ID,
+  MessageId,
+  ToolCallId,
 } from '../lib/index.mjs'
 
 function makeValidToken(overrides = {}) {
@@ -40,6 +49,38 @@ function makeAdapter(envVar) {
   return new MiniMaxAdapter({ envVar, store: undefined })
 }
 
+/** One user-role message carrying plain text. */
+function userMessage(text) {
+  return {
+    id: MessageId('m-user'),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'user' },
+  }
+}
+
+/** One leading system-role message, the `0.2.x` system-prompt carrier. */
+function systemMessage(text) {
+  return {
+    id: MessageId('m-system'),
+    role: 'system',
+    content: [{ type: 'text', text }],
+    source: { kind: 'system-prompt' },
+  }
+}
+
+/** One tool-role message answering a tool call. */
+function toolMessage(callId, text, isError = false) {
+  return {
+    id: MessageId('m-tool'),
+    role: 'tool',
+    content: [{ type: 'text', text }],
+    source: { kind: 'tool', callId: ToolCallId(callId) },
+    toolCallId: ToolCallId(callId),
+    ...(isError ? { isError: true } : {}),
+  }
+}
+
 test('adapter: providerInfo returns OAuth label', () => {
   const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
   const info = adapter.providerInfo(MINIMAX_PROVIDER_ID)
@@ -47,13 +88,18 @@ test('adapter: providerInfo returns OAuth label', () => {
   assert.equal(info.name, 'MiniMax (OAuth)')
 })
 
-test('adapter: listModels exposes M3, M2.7, M2.7-highspeed', async () => {
+test('adapter: listModels exposes M3, M3.1-Flash, M2.7, M2.7-highspeed', async () => {
   const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
   const models = await adapter.listModels(MINIMAX_PROVIDER_ID)
   const ids = models.map((m) => m.id)
   assert.ok(ids.includes('MiniMax-M3'), `M3 missing in ${ids.join(',')}`)
+  assert.ok(ids.includes('MiniMax-M3.1-Flash'))
   assert.ok(ids.includes('MiniMax-M2.7'))
   assert.ok(ids.includes('MiniMax-M2.7-highspeed'))
+  // The route serializes text only, so it must declare that modality.
+  for (const model of models) {
+    assert.deepEqual(model.inputModalities, ['text'], `${model.id} must declare text-only input`)
+  }
 })
 
 test('adapter: resolveModel returns 1M context for M3', async () => {
@@ -61,7 +107,8 @@ test('adapter: resolveModel returns 1M context for M3', async () => {
   const info = await adapter.resolveModel(MINIMAX_PROVIDER_ID, 'MiniMax-M3')
   assert.equal(info.id, 'MiniMax-M3')
   assert.equal(info.context?.contextWindow, 1_000_000)
-  assert.equal(info.defaultMaxTokens, 128_000)
+  assert.equal(info.defaultMaxTokens, 524_288)
+  assert.deepEqual(info.inputModalities, ['text'])
 })
 
 test('readSerializedToken: parses a valid envelope', () => {
@@ -86,7 +133,7 @@ test('readSerializedToken: returns undefined for missing or malformed input', ()
   delete process.env[MINIMAX_INFERENCE_ENV_VAR]
 })
 
-test('adapter: stream() emits Authorization: Bearer header with the access token', async () => {
+test('adapter: stream() emits Authorization: Bearer with the access token', async () => {
   const token = makeValidToken()
   process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
 
@@ -114,9 +161,7 @@ test('adapter: stream() emits Authorization: Bearer header with the access token
     for await (const chunk of adapter.stream({
       provider: MINIMAX_PROVIDER_ID,
       model: 'MiniMax-M3',
-      messages: [
-        { id: 'm1', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } },
-      ],
+      messages: [userMessage('hi')],
       maxTokens: 1024,
     })) {
       chunks.push(chunk)
@@ -142,6 +187,222 @@ test('adapter: stream() emits Authorization: Bearer header with the access token
     assert.ok(usage !== undefined, 'expected a usage chunk')
     assert.equal(usage.usage.inputTokens, 3)
     assert.equal(usage.usage.outputTokens, 1)
+    // The Anthropic wire format reports no total, so the adapter derives it.
+    assert.equal(usage.usage.totalTokens, 4)
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() lifts the leading system message into the system slot', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [systemMessage('You are terse.'), userMessage('hi')],
+    })) {
+      // drain
+    }
+    assert.equal(capturedBody.system, 'You are terse.')
+    // The system message must not also stay in the conversation history.
+    assert.deepEqual(capturedBody.messages, [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ])
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() merges the request-level system prompt with the system message', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [systemMessage('Second part.')],
+      system: 'First part.',
+    })) {
+      // drain
+    }
+    assert.equal(capturedBody.system, 'First part.\n\nSecond part.')
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() serializes a tool-role message into an Anthropic tool_result', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [
+        userMessage('weather?'),
+        {
+          id: MessageId('m-assistant'),
+          role: 'assistant',
+          content: [{
+            type: 'tool-call',
+            id: ToolCallId('toolu_1'),
+            name: 'get_weather',
+            arguments: '{"city":"Jakarta"}',
+          }],
+          source: { kind: 'model', provider: MINIMAX_PROVIDER_ID, model: 'MiniMax-M3' },
+        },
+        toolMessage('toolu_1', 'sunny, 31C'),
+      ],
+    })) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.messages, [
+      { role: 'user', content: [{ type: 'text', text: 'weather?' }] },
+      {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_1',
+          name: 'get_weather',
+          input: { city: 'Jakarta' },
+        }],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [{ type: 'text', text: 'sunny, 31C' }],
+        }],
+      },
+    ])
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() marks a failed tool result with is_error', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [toolMessage('toolu_9', 'boom', true)],
+    })) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.messages, [
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_9',
+          content: [{ type: 'text', text: 'boom' }],
+          is_error: true,
+        }],
+      },
+    ])
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() drops developer tool-change messages (complete tool list is sent)', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [
+        {
+          id: MessageId('m-dev'),
+          role: 'developer',
+          content: [{ type: 'tool-addition', toolName: 'get_weather' }],
+          source: { kind: 'user' },
+        },
+        userMessage('hi'),
+      ],
+      tools: [{
+        name: 'get_weather',
+        description: 'Get current weather',
+        parameters: { type: 'object', properties: { city: { type: 'string' } } },
+      }],
+    })) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.messages, [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ])
+    // The tool declaration still rides on the request.
+    assert.deepEqual(capturedBody.tools, [{
+      name: 'get_weather',
+      description: 'Get current weather',
+      input_schema: { type: 'object', properties: { city: { type: 'string' } } },
+    }])
   } finally {
     delete process.env[MINIMAX_INFERENCE_ENV_VAR]
     delete globalThis.fetch
@@ -182,6 +443,39 @@ test('adapter: stream() sends tools in Anthropic format when present', async () 
         input_schema: { type: 'object', properties: { city: { type: 'string' } } },
       },
     ])
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: stream() omits deferred tool declarations', async () => {
+  const token = makeValidToken()
+  process.env[MINIMAX_INFERENCE_ENV_VAR] = JSON.stringify(token)
+
+  let capturedBody = null
+  globalThis.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(init.body)
+    return sseResponse([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'event: message_stop\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID,
+      model: 'MiniMax-M3',
+      messages: [],
+      tools: [
+        { name: 'deferred_tool', description: 'Loaded on demand', parameters: {}, deferLoading: true },
+        { name: 'eager_tool', description: 'Always sent', parameters: {} },
+      ],
+    })) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.tools?.map((t) => t.name), ['eager_tool'])
   } finally {
     delete process.env[MINIMAX_INFERENCE_ENV_VAR]
     delete globalThis.fetch

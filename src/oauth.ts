@@ -67,6 +67,7 @@ export { expiredInToUnixSeconds }
 export async function requestDeviceCode(
   profile: MiniMaxProviderProfile,
   pkce: { challenge: string; state: string },
+  opts: { signal?: AbortSignal } = {},
 ): Promise<DeviceCodeResponse> {
   const form = new URLSearchParams({
     response_type: 'code',
@@ -85,7 +86,15 @@ export async function requestDeviceCode(
       'x-request-id': crypto.randomUUID(),
     },
     body: form.toString(),
-    signal: AbortSignal.timeout(MINIMAX_OAUTH_HTTP_TIMEOUT_SECONDS * 1000),
+    // The request owns a hard timeout; the caller's signal is folded in so a
+    // cancelled login stops the in-flight HTTP call instead of waiting the
+    // full timeout out.
+    signal: opts.signal === undefined
+      ? AbortSignal.timeout(MINIMAX_OAUTH_HTTP_TIMEOUT_SECONDS * 1000)
+      : AbortSignal.any([
+        AbortSignal.timeout(MINIMAX_OAUTH_HTTP_TIMEOUT_SECONDS * 1000),
+        opts.signal,
+      ]),
   })
 
   if (!res.ok) {

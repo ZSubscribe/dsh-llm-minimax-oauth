@@ -12,6 +12,17 @@
  * the rest of the request body, the SSE parsing, and the harness
  * `StreamChunk` vocabulary stay identical to a first-party Anthropic client.
  *
+ * Harness contract implemented here (DSH `0.2.1-rc.3`):
+ *   - `LlmAdapter` from `@deepseek-ai/dsh-llm`: `providerInfo`,
+ *     `providerRetryPolicy`, `listModels`, `resolveModel`, `stream`.
+ *   - The `0.2.x` message model: `GenerateOptions.messages` carries a
+ *     discriminated union of role-tagged messages. A system prompt arrives as
+ *     a leading `role: 'system'` message (the request-level `options.system`
+ *     is only set by one-shot callers), and a tool result arrives as its own
+ *     `role: 'tool'` message instead of a `tool-result` content block.
+ *   - `ToolCallId` is the brand for tool-call correlation in `0.2.x`
+ *     (renamed from `CallId`).
+ *
  * Token resolution reads the serialized JSON token from
  * `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL`. The token envelope holds the
  * OAuth access token, refresh token, expiry, and the inference base URL; an
@@ -22,9 +33,9 @@
  */
 
 import {
-  CallId,
   LlmAdapter,
   LlmError,
+  ToolCallId,
 } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
@@ -33,9 +44,11 @@ import type {
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  RequestMessage,
   ResolvedRetryPolicy,
   StreamChunk,
   TokenUsage,
+  ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 import {
   MINIMAX_DEFAULT_MAX_TOKENS,
@@ -216,6 +229,26 @@ interface AnthropicRequest {
   stop_sequences?: string[]
 }
 
+/**
+ * Parse a model-produced tool-arguments string into a JSON object.
+ *
+ * The Anthropic wire format types `tool_use.input` as an object, while the
+ * harness keeps the raw JSON text. A malformed fragment is sent as an empty
+ * object rather than dropped: the model still sees the call it made, and the
+ * tool reports the missing arguments itself.
+ */
+function parseToolArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+    return {}
+  } catch {
+    return {}
+  }
+}
+
 /** Serialize one harness `ContentBlock` to an Anthropic content part. */
 function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
   switch (block.type) {
@@ -230,22 +263,7 @@ function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
         type: 'tool_use',
         id: block.id,
         name: block.name,
-        input: (() => {
-          try {
-            return JSON.parse(block.arguments)
-          } catch {
-            return {}
-          }
-        })(),
-      }
-    case 'tool-result':
-      return {
-        type: 'tool_result',
-        tool_use_id: block.toolCallId,
-        content: block.content
-          .filter((part): part is Extract<ContentBlock, { type: 'text' }> => part.type === 'text')
-          .map((part) => ({ type: 'text' as const, text: part.text })),
-        ...(block.isError === true ? { is_error: true } : {}),
+        input: parseToolArguments(block.arguments),
       }
     case 'image':
       throw new LlmError(
@@ -257,24 +275,136 @@ function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
         'MiniMax OAuth adapter does not support inline file content; reference attachments through a tool.',
         'UNSUPPORTED_CONTENT',
       )
+    default:
+      // Tool-change blocks belong to developer messages; reaching one inside a
+      // conversation message means the caller mixed the two vocabularies.
+      throw new LlmError(
+        `MiniMax OAuth adapter cannot represent "${String((block as { type: string }).type)}" content in a conversation message.`,
+        'UNSUPPORTED_CONTENT',
+      )
   }
 }
 
-/** Serialize the harness message list to the Anthropic Messages shape. */
+/** Join the text blocks of one harness message. */
+function flattenText(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text)
+    .join('')
+}
+
+/**
+ * Split the request into the Anthropic top-level system slot and the
+ * remaining conversation messages.
+ *
+ * In the `0.2.x` message model the system prompt is a leading
+ * `role: 'system'` message; `options.system` is only populated by one-shot
+ * callers. Both are merged into the single Anthropic `system` field, joined
+ * the same way the built-in `pi-ai` adapter joins them.
+ *
+ * The Anthropic Messages format has exactly one system slot, so a system
+ * message that is *not* leading cannot be represented in history either.
+ * It is folded into the same slot instead of being dropped, which keeps the
+ * prompt visible to the model rather than silently losing it.
+ */
+function splitSystemPrompt(options: GenerateOptions): {
+  system?: string
+  messages: RequestMessage[]
+} {
+  const parts: string[] = []
+  if (options.system !== undefined && options.system.length > 0) {
+    parts.push(options.system)
+  }
+  const messages: RequestMessage[] = []
+  for (const message of options.messages) {
+    if (message.role === 'system') {
+      const text = flattenText(message.content)
+      if (text.length > 0) parts.push(text)
+      continue
+    }
+    messages.push(message)
+  }
+  return {
+    ...(parts.length > 0 ? { system: parts.join('\n\n') } : {}),
+    messages,
+  }
+}
+
+/**
+ * Convert one harness tool-result message into an Anthropic `tool_result`
+ * part.
+ *
+ * In the `0.2.x` message model a tool result is its own `role: 'tool'`
+ * message: the call correlation lives on the message (`toolCallId`) and the
+ * failure flag on the message (`isError`), not inside a content block. The
+ * Anthropic wire format carries the same three facts inside one part, which
+ * is why the part rides in a `user`-role message.
+ */
+function toolResultToPart(message: ToolResultMessage): AnthropicToolResultPart {
+  const text = flattenText(message.content)
+  return {
+    type: 'tool_result',
+    tool_use_id: message.toolCallId,
+    content: text.length > 0 ? [{ type: 'text', text }] : '',
+    ...(message.isError === true ? { is_error: true } : {}),
+  }
+}
+
+/**
+ * Convert the harness request history into Anthropic Messages wire messages.
+ *
+ * Role mapping:
+ *   - `user`      → Anthropic `user` message.
+ *   - `assistant` → Anthropic `assistant` message.
+ *   - `tool`      → Anthropic `user` message holding one `tool_result` part,
+ *                   because the Anthropic format expects tool output as a
+ *                   user turn that answers the preceding `tool_use`.
+ *   - `developer` → dropped. This route declares no `toolUpdate`, so the
+ *                   harness sends the complete tool list on every request and
+ *                   the developer blocks carry no extra information.
+ */
+function toAnthropicMessages(messages: readonly RequestMessage[]): AnthropicRequest['messages'] {
+  const out: AnthropicRequest['messages'] = []
+  for (const message of messages) {
+    switch (message.role) {
+      case 'user':
+        out.push({ role: 'user', content: message.content.map(contentBlockToPart) })
+        break
+      case 'assistant':
+        out.push({ role: 'assistant', content: message.content.map(contentBlockToPart) })
+        break
+      case 'tool':
+        out.push({ role: 'user', content: [toolResultToPart(message)] })
+        break
+      case 'developer':
+        break
+      default:
+        break
+    }
+  }
+  return out
+}
+
+/**
+ * Serialize the harness request to the Anthropic Messages body.
+ *
+ * Tool declarations follow the built-in `pi-ai` adapter: a tool marked
+ * `deferLoading` is not part of the wire declaration list, because its
+ * schema is activated by a developer event instead.
+ */
 function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
-  const messages: AnthropicRequest['messages'] = options.messages.map((message) => ({
-    role: message.role === 'assistant' ? 'assistant' : 'user',
-    content: message.content.map(contentBlockToPart),
-  }))
-  const tools: AnthropicTool[] | undefined = options.tools?.map((tool) => ({
-    name: tool.name,
-    ...(tool.description ? { description: tool.description } : {}),
-    input_schema: tool.parameters,
-  }))
+  const { system, messages } = splitSystemPrompt(options)
+  const tools: AnthropicTool[] | undefined = options.tools
+    ?.filter((tool) => tool.deferLoading !== true)
+    .map((tool) => ({
+      name: tool.name,
+      ...(tool.description ? { description: tool.description } : {}),
+      input_schema: tool.parameters,
+    }))
   return {
     model: options.model,
-    ...(options.system !== undefined && options.system.length > 0 ? { system: options.system } : {}),
-    messages,
+    ...(system !== undefined ? { system } : {}),
+    messages: toAnthropicMessages(messages),
     max_tokens: options.maxTokens ?? MINIMAX_DEFAULT_MAX_TOKENS,
     stream: true,
     ...(tools !== undefined && tools.length > 0 ? { tools } : {}),
@@ -414,6 +544,11 @@ export class MiniMaxAdapter extends LlmAdapter {
         provider,
         id: entry.id,
         name: entry.name,
+        // This route serializes text only: the adapter has no access to the
+        // attachment service, so an image cannot be inlined. Declaring the
+        // modality lets the harness project images to deterministic text
+        // instead of failing the request outright.
+        inputModalities: ['text'],
       }
       if (entry.description !== undefined) {
         return { ...info, description: entry.description }
@@ -432,6 +567,7 @@ export class MiniMaxAdapter extends LlmAdapter {
       provider,
       id: model,
       name: configured?.name ?? model,
+      inputModalities: ['text'],
       context: {
         contextWindow: configured?.contextWindow ?? MINIMAX_DEFAULT_CONTEXT_WINDOW,
       },
@@ -559,7 +695,7 @@ export class MiniMaxAdapter extends LlmAdapter {
             yield {
               type: 'tool-call-delta',
               index,
-              id: CallId(current.toolId ?? ''),
+              id: ToolCallId(current.toolId ?? ''),
               ...(current.toolName !== undefined ? { name: current.toolName } : {}),
               argumentsDelta: delta.partial_json,
             }
@@ -573,15 +709,12 @@ export class MiniMaxAdapter extends LlmAdapter {
           if (current.kind === 'text') {
             yield { type: 'block-end', index, block: { type: 'text', text: current.text } satisfies ContentBlock }
           } else if (current.kind === 'tool-call') {
-            if (current.text.length > 0) {
-              try { JSON.parse(current.text) } catch { /* ignore malformed input */ }
-            }
             yield {
               type: 'block-end',
               index,
               block: {
                 type: 'tool-call',
-                id: CallId(current.toolId ?? ''),
+                id: ToolCallId(current.toolId ?? ''),
                 name: current.toolName ?? '',
                 arguments: current.text,
               } satisfies ContentBlock,
@@ -618,7 +751,9 @@ export class MiniMaxAdapter extends LlmAdapter {
       throw new LlmError(`MiniMax stream error: ${errorMessage}`, 'TRANSPORT')
     }
     if (usage !== undefined && !emittedUsage) {
-      yield { type: 'usage', usage }
+      // The Anthropic wire format reports no total, so derive it from the
+      // authoritative prompt/output counters the harness meter expects.
+      yield { type: 'usage', usage: { ...usage, totalTokens: usage.inputTokens + usage.outputTokens } }
       emittedUsage = true
     }
     yield {
