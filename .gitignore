@@ -10,6 +10,9 @@ tsconfig.base.json
 pnpm-workspace.yaml
 pnpm-lock.yaml
 
+# One-off Windows sandbox ACL repair reports/backups
+.acl-recovery/
+
 # Test artifacts
 coverage/
 *.lcov

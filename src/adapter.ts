@@ -23,11 +23,12 @@
  *   - `ToolCallId` is the brand for tool-call correlation in `0.2.x`
  *     (renamed from `CallId`).
  *
- * Token resolution reads the serialized JSON token from
- * `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL`. The token envelope holds the
- * OAuth access token, refresh token, expiry, and the inference base URL; an
- * inline refresh swaps in a fresh access token when the cached one is within
- * {@link MINIMAX_OAUTH_REFRESH_SKEW_SECONDS} of expiry.
+ * Token resolution reads the serialized JSON token from the profile's env var
+ * (`DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` for Global,
+ * `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN` for CN). The token envelope
+ * holds the OAuth access token, refresh token, expiry, and the inference base
+ * URL; an inline refresh swaps in a fresh access token when the cached one is
+ * within {@link MINIMAX_OAUTH_REFRESH_SKEW_SECONDS} of expiry.
  *
  * @module dsh-llm-minimax-oauth/adapter
  */
@@ -155,14 +156,20 @@ async function refreshToken(token: SerializedToken): Promise<SerializedToken> {
 }
 
 /** Persist the envelope back to the env var and the optional on-disk store. */
-function writeTokenBack(envVar: string, token: SerializedToken, store?: FileCredentialStore): void {
+function writeTokenBack(
+  providerId: string,
+  envVar: string,
+  token: SerializedToken,
+  store?: FileCredentialStore,
+): void {
   process.env[envVar] = JSON.stringify(token)
   if (store !== undefined) {
     // Best-effort write; the in-process env var already has the fresh value
     // and a subsequent boot re-reads from disk, so a write failure does not
-    // invalidate the live session.
+    // invalidate the live session. `providerId` (not a global constant) keeps
+    // the Global and CN sessions in separate store records.
     void store.write({
-      provider_id: MINIMAX_PROVIDER_ID,
+      provider_id: providerId,
       oauth_base_url: token.oauth_base_url,
       inference_base_url: token.inference_base_url,
       client_id: MINIMAX_OAUTH_CLIENT_ID,
@@ -522,16 +529,27 @@ async function* sseStream(response: Response, signal: AbortSignal): AsyncGenerat
  */
 export class MiniMaxAdapter extends LlmAdapter {
   private readonly envVar: string
+  private readonly providerId: string
+  private readonly displayName: string
   private readonly store: FileCredentialStore | undefined
 
-  constructor(options: { envVar?: string; store?: FileCredentialStore } = {}) {
+  constructor(
+    options: {
+      envVar?: string
+      providerId?: string
+      displayName?: string
+      store?: FileCredentialStore
+    } = {},
+  ) {
     super()
     this.envVar = options.envVar ?? MINIMAX_INFERENCE_ENV_VAR
+    this.providerId = options.providerId ?? MINIMAX_PROVIDER_ID
+    this.displayName = options.displayName ?? 'MiniMax (OAuth)'
     this.store = options.store
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
-    return { id: provider, name: 'MiniMax (OAuth)' }
+    return { id: provider, name: this.displayName }
   }
 
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
@@ -594,7 +612,7 @@ export class MiniMaxAdapter extends LlmAdapter {
     if (!needsRefresh(cached)) return { token: cached }
     try {
       const next = await refreshToken(cached)
-      writeTokenBack(this.envVar, next, this.store)
+      writeTokenBack(this.providerId, this.envVar, next, this.store)
       return { token: next }
     } catch (error) {
       throw new LlmError(
@@ -611,7 +629,7 @@ export class MiniMaxAdapter extends LlmAdapter {
    * vocabulary as the response SSE events arrive.
    */
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    if (options.provider !== MINIMAX_PROVIDER_ID) {
+    if (options.provider !== this.providerId) {
       throw new LlmError(
         `MiniMax adapter received unexpected provider "${options.provider}"`,
         'INVALID_REQUEST',

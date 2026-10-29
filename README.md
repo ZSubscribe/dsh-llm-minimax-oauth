@@ -4,23 +4,30 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.3-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-green)](https://nodejs.org)
 [![OAuth](https://img.shields.io/badge/OAuth-2.0%20PKCE-blue)](https://datatracker.ietf.org/doc/html/rfc8628)
-[![Platform](https://img.shields.io/badge/MiniMax-Global-orange)](https://platform.minimax.io)
+[![Platform](https://img.shields.io/badge/MiniMax-Global%20%7C%20CN-orange)](https://platform.minimax.io)
 
-DeepSeek Harness plugin: **MiniMax Global OAuth / Coding Plan** via browser login.
+DeepSeek Harness plugin: **MiniMax (Global and CN) OAuth / Coding Plan** via
+browser login.
 
-Registers the `minimax-portal` provider route on DSH's LLM runtime via a
-custom `LlmAdapter`. The user authorizes once through a browser-based
-device-code PKCE flow; tokens are persisted to
+Registers two provider routes on DSH's LLM runtime via a custom
+`LlmAdapter` — `minimax-portal` for the Global site and
+`minimax-portal-cn` for the CN site. The user authorizes once per region
+through a browser-based device-code PKCE flow; tokens are persisted to
 `$DSH_HOME/minimax-oauth.json`, refreshed transparently when close to
-expiry, and serialized into the `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL`
-env var so the adapter can authenticate Anthropic Messages requests with
+expiry, and serialized into the region's env var
+(`DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` for Global,
+`DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN` for CN) so the adapters can
+authenticate Anthropic Messages requests with
 `Authorization: Bearer <oauth_access_token>` against
-`https://api.minimax.io/anthropic/v1/messages`.
+`https://api.minimax.io/anthropic/v1/messages` (Global) or
+`https://api.minimaxi.com/anthropic/v1/messages` (CN). The two regions
+have independent credentials: signing in to one never overwrites the
+other.
 
 The built-in `pi-ai` `minimax` route (API-key path that reads
 `MINIMAX_API_KEY` and sends `x-api-key`) is unchanged and remains
 available for users who authenticate via API key. The OAuth path lives on
-a separate route id so the two authentication channels never collide.
+separate route ids so the two authentication channels never collide.
 
 ## Table of Contents
 
@@ -45,7 +52,9 @@ a separate route id so the two authentication channels never collide.
   an exact version)
 - **Node.js** `^22.19.0` or `>=24.0.0`
 - A MiniMax account with an active **Coding Plan** or **Credits** balance
-  ([platform.minimax.io](https://platform.minimax.io))
+  on [platform.minimax.io](https://platform.minimax.io) (Global) or
+  [platform.minimaxi.com](https://platform.minimaxi.com) (CN). Use the
+  account matching the endpoint you intend to sign in to.
 - A modern browser with popups enabled (or willingness to copy the
   authorization URL manually — see [Troubleshooting](#browser-does-not-open-automatically))
 
@@ -107,33 +116,43 @@ package from your registry instead of the local path.
 
 ## Use
 
-Open the Web UI at `http://127.0.0.1:3080`, go to Settings → MiniMax OAuth,
-and click **Login with MiniMax**. A browser tab opens to the MiniMax OAuth
-authorization page. Approve, then return to the settings panel — status flips
-to "logged in" within ~5 seconds.
+Open the Web UI at `http://127.0.0.1:3080`, go to Settings → MiniMax
+OAuth. The panel shows one card per region: **MiniMax (Global)** and
+**MiniMax (CN)**, each with its own login state. Click **Login with
+MiniMax (Global)** or **Login with MiniMax (CN)**. A browser tab opens to
+that region's MiniMax OAuth authorization page. Approve, then return to
+the settings panel — status flips to "logged in" within ~5 seconds.
+
+The two regions are independent: logging in to CN does not affect the
+Global credential, and vice versa.
 
 For headless / remote sessions, run the CLI fallback:
 
 ```sh
-dsh-minimax-login              # interactive
-dsh-minimax-login --no-browser # print URL, do not auto-open
-dsh-minimax-login --logout     # clear stored token
+dsh-minimax-login                          # interactive, defaults to Global
+dsh-minimax-login --provider minimax-portal-cn  # sign in to the CN site
+dsh-minimax-login --no-browser             # print URL, do not auto-open
+dsh-minimax-login --list                   # list provider ids
+dsh-minimax-login --logout                 # clear the stored token
 ```
 
 After login, set the default model in `~/.dsh/settings.yaml`:
 
 ```yaml
 agent-default-model:
-  provider: minimax-portal
+  provider: minimax-portal   # or minimax-portal-cn
   model: MiniMax-M3
 ```
 
 ## Models unlocked
 
-Provider `minimax-portal` (custom adapter in this plugin) at
-`https://api.minimax.io/anthropic`, exposing `MiniMax-M3` (1M context),
-`MiniMax-M3.1-Flash` (1M context), `MiniMax-M2.7`, and
-`MiniMax-M2.7-highspeed`.
+Two custom providers are registered, both exposing the same catalog:
+
+- `minimax-portal` → `https://api.minimax.io/anthropic` (Global)
+- `minimax-portal-cn` → `https://api.minimaxi.com/anthropic` (CN)
+
+Both expose `MiniMax-M3` (1M context), `MiniMax-M3.1-Flash` (1M context),
+`MiniMax-M2.7`, and `MiniMax-M2.7-highspeed`.
 
 `MiniMax-M3` is the default and recommended for the Coding Plan.
 
@@ -156,25 +175,31 @@ The browser-side MiniMax authorization page that opens after clicking
 
 ## Authentication
 
-The plugin authenticates with `Authorization: Bearer <oauth_access_token>`,
-matching the MiniMax Global OAuth contract documented at
-<https://platform.minimax.io/docs/solutions/openclaw> and implemented in
-OpenClaw's `extensions/minimax/provider-registration.ts`.
+Both regions authenticate with `Authorization: Bearer
+<oauth_access_token>` against the region's Anthropic-compatible endpoint,
+matching the MiniMax OAuth contract implemented in OpenClaw's
+`extensions/minimax/provider-registration.ts`. The per-region bases are:
+
+| Region | OAuth base | Inference base | Env var |
+| --- | --- | --- | --- |
+| Global | `https://account.minimax.io` | `https://api.minimax.io/anthropic` | `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` |
+| CN | `https://account.minimaxi.com` | `https://api.minimaxi.com/anthropic` | `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN` |
 
 OAuth flow shape (device-code + PKCE S256 + state validation) is
-byte-identical to OpenClaw's reference implementation:
+identical for both regions:
 
-- Device-code endpoint: `https://account.minimax.io/oauth2/device/code`
-- Token endpoint: `https://account.minimax.io/oauth2/token`
+- Device-code endpoint: `<oauth base>/oauth2/device/code`
+- Token endpoint: `<oauth base>/oauth2/token`
 - Client id: `78257093-7e40-4613-99e0-527b14b39113` (OpenClaw public client id)
 - Scope: `group_id profile model.completion`
 - Grant type: `urn:ietf:params:oauth:grant-type:user_code`
 - Refresh grant: `refresh_token`
 
 Tokens are persisted at `$DSH_HOME/minimax-oauth.json` (default
-`~/.dsh/minimax-oauth.json`) and mirrored into the
-`DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` env var as a JSON envelope
-(`{access, refresh, expires_at, inference_base_url, oauth_base_url}`).
+`~/.dsh/minimax-oauth.json`) and mirrored into the matching env var as a
+JSON envelope (`{access, refresh, expires_at, inference_base_url,
+oauth_base_url}`). One `provider_id` entry is stored per region, so both
+regions can be signed in at the same time.
 
 ### Flow at a glance
 
@@ -191,7 +216,7 @@ Tokens are persisted at `$DSH_HOME/minimax-oauth.json` (default
 │          │ ◀── { logged_in: true }     │  /token │
 │          │                             │         │
 │          │ writes access_token into    │         │
-│          │ env DSH_MINIMAX_OAUTH_TOKEN │         │
+│          │ the region's env var        │         │
 └──────────┘                             └─────────┘
                   Bearer auth ──────────────────▶ MiniMax /v1/messages
 ```
@@ -200,7 +225,10 @@ Tokens are persisted at `$DSH_HOME/minimax-oauth.json` (default
 device code in <1 second. Token polling runs server-side in the
 background and writes the credential to disk the moment authorization
 succeeds. This keeps the HTTP connection short and avoids the
-"Waiting for browser…" freeze that a blocking poll would cause.
+"Waiting for browser…" freeze that a blocking poll would cause. The
+background poll also catches its own timeout: if the user never finishes
+authorization, the failure is recorded for `/status` instead of becoming
+an unhandled rejection that would terminate the DSH process.
 
 ## Troubleshooting
 
@@ -215,17 +243,26 @@ the bundle looks stale.
 flow: copy the verification URL + user code from the Settings panel and
 finish authorization in your browser.
 
+**Authorization page says the account is unknown or the login never
+completes on one region.** Global and CN are separate accounts. Use the
+card (or `--provider` id) that matches the site where the Coding Plan is
+active: `minimax-portal` → `account.minimax.io`,
+`minimax-portal-cn` → `account.minimaxi.com`.
+
 **Login reports "Token Plan usage limit reached".** Account quota exhausted;
 the OAuth handshake succeeded, but the model endpoint returned 429. Wait for
 quota reset or upgrade the plan on MiniMax's Token Plan page.
 
 **`MiniMax OAuth refresh failed: invalid_grant`.** The stored refresh token
-was revoked or expired (server-side policy). Run `dsh-minimax-login --logout`
-and re-authorize.
+was revoked or expired (server-side policy). Run `dsh-minimax-login
+--logout` (add `--provider minimax-portal-cn` for the CN region) and
+re-authorize.
 
 **`MiniMax OAuth timed out before authorization completed`.** The user did
 not finish authorization within the device-code lifetime (default ~10 min).
-Re-run the login flow.
+The background poll records this for the Settings panel and stays alive —
+the DSH host no longer crashes when a login is left pending. Re-run the
+login flow.
 
 **`dsh plugin add` fails with `prepare script denied`.** pnpm ≥10 refuses to
 run install scripts by default. Edit the profile's `pnpm-workspace.yaml`
@@ -239,9 +276,10 @@ and add the `allowBuilds` snippet from [Install](#install).
   access tokens until explicitly revoked from your MiniMax account settings.
 - The plugin never logs full token values; the adapter logs only redacted
   previews during error paths.
-- `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` is a process-local env var
-  mirroring the persisted token; it is not exported or sourced from any
-  shell rc file by this plugin.
+- `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL` and
+  `DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN` are process-local env vars
+  mirroring the persisted region tokens; they are not exported or sourced
+  from any shell rc file by this plugin.
 - The plugin does not enable telemetry, analytics, or outbound network
   calls beyond the MiniMax OAuth endpoints and the model API.
 
@@ -256,6 +294,7 @@ Then remove the persisted credentials:
 ```sh
 rm -f ~/.dsh/minimax-oauth.json
 unset DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL
+unset DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN
 ```
 
 The built-in `pi-ai` `minimax` route (API-key path) is untouched and remains
@@ -314,6 +353,8 @@ import {
   ToolCallId,       // brand a tool-call correlation
   // Constants
   MINIMAX_PROVIDER_ID, MINIMAX_INFERENCE_ENV_VAR,
+  MINIMAX_PROVIDER_ID_CN, MINIMAX_INFERENCE_ENV_VAR_CN,
+  DEFAULT_PROVIDER_PROFILES,
   MINIMAX_DEFAULT_MODEL_CATALOG, ...,
 } from 'dsh-llm-minimax-oauth'
 ```

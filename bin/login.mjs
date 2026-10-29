@@ -3,8 +3,9 @@
 // Wraps the plugin's runAuthorization with explicit stdout flushing so output
 // is visible whether running interactively or via subprocess.
 //
-// Supports the MiniMax Global Coding Plan only.
+// Supports the MiniMax Coding Plan (Global: api.minimax.io, CN: api.minimaxi.com).
 import path from 'node:path'
+import os from 'node:os'
 import url from 'node:url'
 import readline from 'node:readline/promises'
 import fs from 'node:fs'
@@ -35,7 +36,7 @@ async function openBrowser(target) {
   // Imported lazily so the bundle stays small when this path isn't used.
   const { execSync } = await import('node:child_process')
   try {
-    if (process.env.OS === 'Windows_NT') {
+    if (process.platform === 'win32') {
       execSync(`start "" "${target}"`, { stdio: 'ignore' })
     } else if (process.platform === 'darwin') {
       execSync(`open "${target}"`, { stdio: 'ignore' })
@@ -58,8 +59,14 @@ async function confirm(provider) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
   if (opts.help) {
-    out('Usage: dsh-minimax-login [--no-browser] [--logout]')
-    out('Defaults to MiniMax Global Coding Plan (api.minimax.io).')
+    out('Usage: dsh-minimax-login [--provider <id>] [--no-browser] [--list] [--logout]')
+    out('')
+    out('Providers:')
+    for (const p of DEFAULT_PROVIDER_PROFILES) {
+      out(`  ${p.id}\t${p.label} (${p.inferenceBaseUrl})`)
+    }
+    out('')
+    out('Defaults to the Global Coding Plan (api.minimax.io).')
     return
   }
   if (opts.list) {
@@ -79,7 +86,8 @@ async function main() {
     return
   }
 
-  const tokenPath = path.join(process.env.DSH_HOME || `${process.env.HOME}/.dsh`, 'minimax-oauth.json')
+  const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+  const tokenPath = path.join(dshHome, 'minimax-oauth.json')
   const store = new FileCredentialStore(tokenPath)
 
   if (opts.logout) {
@@ -115,23 +123,28 @@ async function main() {
   out(`✓ Success! Token valid until ${result.state.expires_at}`)
   out(`Token saved to ${tokenPath}`)
 
-  // Mirror token to ~/.dsh/.env as MINIMAX_API_KEY so the built-in `pi-ai`
-  // `minimax` adapter can pick it up on next launch without re-importing the
-  // plugin. This matches the variable the `sync-minimax-oauth.sh` launcher
-  // writes when porting a token from OpenClaw's SQLite store.
-  const envKey = 'MINIMAX_API_KEY'
-  const envFile = process.env.DSH_HOME ? `${process.env.DSH_HOME}/.env` : `${process.env.HOME}/.dsh/.env`
-  try {
-    let existing = ''
-    if (fs.existsSync(envFile)) existing = fs.readFileSync(envFile, 'utf8')
-    const lines = existing.split('\n').filter((l) => !l.startsWith(`${envKey}=`))
-    lines.push(`${envKey}=${result.state.access_token}`)
-    fs.writeFileSync(envFile, lines.join('\n'))
-    fs.chmodSync(envFile, 0o600)
-    out(`Mirrored token to ${envFile} as ${envKey}`)
-    out('Restart DeepSeek Harness to pick up the new key.')
-  } catch (e) {
-    out(`⚠ Could not mirror to ${envFile}: ${e.message}`)
+  // Mirror a Global token to ~/.dsh/.env as MINIMAX_API_KEY so the built-in
+  // `pi-ai` `minimax` adapter can pick it up on next launch without
+  // re-importing the plugin. The built-in provider targets api.minimax.io,
+  // so a CN token must never be mirrored under that key.
+  if (profile.id === DEFAULT_PROVIDER_PROFILES[0].id) {
+    const envKey = 'MINIMAX_API_KEY'
+    const envFile = path.join(dshHome, '.env')
+    try {
+      fs.mkdirSync(dshHome, { recursive: true })
+      let existing = ''
+      if (fs.existsSync(envFile)) existing = fs.readFileSync(envFile, 'utf8')
+      const lines = existing.split('\n').filter((l) => !l.startsWith(`${envKey}=`))
+      lines.push(`${envKey}=${result.state.access_token}`)
+      fs.writeFileSync(envFile, lines.join('\n'))
+      fs.chmodSync(envFile, 0o600)
+      out(`Mirrored token to ${envFile} as ${envKey}`)
+      out('Restart DeepSeek Harness to pick up the new key.')
+    } catch (e) {
+      out(`⚠ Could not mirror to ${envFile}: ${e.message}`)
+    }
+  } else {
+    out(`CN token stored for the plugin only; MINIMAX_API_KEY (api.minimax.io) was not touched.`)
   }
 }
 

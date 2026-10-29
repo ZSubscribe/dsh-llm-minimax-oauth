@@ -1,5 +1,11 @@
 /**
- * MiniMax Global OAuth constants and helpers shared between runtime, client, and CLI.
+ * MiniMax OAuth constants and helpers shared between runtime, client, and CLI.
+ *
+ * Two regions are supported, each with its own OAuth host, inference host and
+ * provider route:
+ *
+ *   - Global: `account.minimax.io` + `api.minimax.io/anthropic`
+ *   - CN:     `account.minimaxi.com` + `api.minimaxi.com/anthropic`
  *
  * Endpoint URLs, grant identifiers, and PKCE method are derived from the
  * OpenClaw reference implementation:
@@ -41,6 +47,16 @@ export const MINIMAX_OAUTH_HTTP_TIMEOUT_SECONDS = 15
 export const MINIMAX_INFERENCE_ENV_VAR = 'DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL'
 
 /**
+ * Env var carrying the serialized OAuth access token for MiniMax (CN).
+ *
+ * Each region needs its own env var: the two profiles are independent, and a
+ * shared variable would let a CN login silently overwrite a Global session
+ * (and vice versa). The Global var above is kept unchanged for compatibility
+ * with existing installations.
+ */
+export const MINIMAX_INFERENCE_ENV_VAR_CN = 'DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL_CN'
+
+/**
  * Provider route id registered with `ctx.llm.registerAdapter()`.
  *
  * Distinct from `MINIMAX_REGION_GLOBAL` because the route is what the
@@ -49,8 +65,14 @@ export const MINIMAX_INFERENCE_ENV_VAR = 'DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL
  */
 export const MINIMAX_PROVIDER_ID = 'minimax-portal'
 
+/** Provider route id for MiniMax (CN). */
+export const MINIMAX_PROVIDER_ID_CN = 'minimax-portal-cn'
+
 /** Default region id (matches the OAuth profile label). */
 export const MINIMAX_REGION_GLOBAL = 'minimax-portal'
+
+/** Region id for MiniMax (CN) (matches the OAuth profile label). */
+export const MINIMAX_REGION_CN = 'minimax-portal-cn'
 
 /** Anthropic Messages API version header value. */
 export const MINIMAX_ANTHROPIC_VERSION = '2023-06-01'
@@ -71,7 +93,7 @@ export interface MiniMaxCatalogModel {
 }
 
 /**
- * Default model catalog for MiniMax Global Coding Plan OAuth.
+ * Default model catalog for the MiniMax Coding Plan OAuth (Global and CN).
  *
  * The list is sourced from `pi-ai`'s built-in `minimax` provider data file
  * (verified against `@earendil-works/pi-ai@1.1.0/dist/providers/data/minimax.json`)
@@ -123,15 +145,28 @@ export interface MiniMaxProviderProfile {
   oauthBaseUrl: string
   /** Base URL for the Anthropic-compatible inference endpoint. */
   inferenceBaseUrl: string
+  /**
+   * Process-env variable that carries this profile's serialized token.
+   *
+   * Each region owns one variable so the two profiles can be logged in at the
+   * same time without clobbering each other.
+   */
+  envVar: string
 }
 
 /**
- * The single MiniMax Global provider profile this plugin supports.
+ * MiniMax provider profiles supported by this plugin.
  *
- * `oauthBaseUrl` matches OpenClaw's `oauthBaseUrl: "https://account.minimax.io"`.
- * `inferenceBaseUrl` matches OpenClaw's `baseUrl: "https://api.minimax.io"`
- * plus the Anthropic-compatible path `/anthropic`, matching the built-in
- * `pi-ai` `minimax` provider.
+ * - Global: `oauthBaseUrl` matches OpenClaw's
+ *   `oauthBaseUrl: "https://account.minimax.io"`; `inferenceBaseUrl` matches
+ *   OpenClaw's `baseUrl: "https://api.minimax.io"` plus the Anthropic-compatible
+ *   path `/anthropic`.
+ * - CN: the mainland-China equivalents, `https://account.minimaxi.com` and
+ *   `https://api.minimaxi.com/anthropic` (same public client id, same device
+ *   code flow).
+ *
+ * Both regions use the same public OAuth client id and scope; only the hosts
+ * and the provider route differ.
  */
 export const DEFAULT_PROVIDER_PROFILES: readonly MiniMaxProviderProfile[] = [
   {
@@ -139,5 +174,13 @@ export const DEFAULT_PROVIDER_PROFILES: readonly MiniMaxProviderProfile[] = [
     label: 'MiniMax (Global)',
     oauthBaseUrl: 'https://account.minimax.io',
     inferenceBaseUrl: 'https://api.minimax.io/anthropic',
+    envVar: MINIMAX_INFERENCE_ENV_VAR,
+  },
+  {
+    id: MINIMAX_REGION_CN,
+    label: 'MiniMax (CN)',
+    oauthBaseUrl: 'https://account.minimaxi.com',
+    inferenceBaseUrl: 'https://api.minimaxi.com/anthropic',
+    envVar: MINIMAX_INFERENCE_ENV_VAR_CN,
   },
 ] as const

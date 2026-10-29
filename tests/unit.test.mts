@@ -9,6 +9,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { webcrypto as crypto } from 'node:crypto'
+import os from 'node:os'
+import path from 'node:path'
 import {
   generatePkcePair,
   requestDeviceCode,
@@ -23,12 +25,25 @@ import {
   refreshAccessToken,
   MiniMaxOAuthError,
 } from '../lib/index.mjs'
+import {
+  DEFAULT_PROVIDER_PROFILES,
+  MINIMAX_INFERENCE_ENV_VAR,
+  MINIMAX_INFERENCE_ENV_VAR_CN,
+  MINIMAX_PROVIDER_ID,
+  MINIMAX_PROVIDER_ID_CN,
+} from '../lib/index.mjs'
 
 const PROFILE = {
   id: 'minimax',
   label: 'MiniMax (Global)',
   oauthBaseUrl: 'https://account.minimax.io',
   inferenceBaseUrl: 'https://api.minimax.io/anthropic',
+  envVar: 'DSH_MINIMAX_OAUTH_TOKEN_MINIMAX_PORTAL',
+}
+
+/** Temp file path that works on Windows as well as POSIX hosts. */
+function tmpFile(suffix: string): string {
+  return path.join(os.tmpdir(), `minimax-oauth-test-${process.pid}-${Date.now()}-${suffix}.json`)
 }
 
 function mockResponse(status, body) {
@@ -45,6 +60,24 @@ function restoreFetch(mock) {
     delete globalThis.fetch
   }
 }
+
+test('DEFAULT_PROVIDER_PROFILES: Global and CN use distinct endpoints and env vars', () => {
+  assert.equal(DEFAULT_PROVIDER_PROFILES.length, 2)
+  const global = DEFAULT_PROVIDER_PROFILES.find((p) => p.id === MINIMAX_PROVIDER_ID)
+  const cn = DEFAULT_PROVIDER_PROFILES.find((p) => p.id === MINIMAX_PROVIDER_ID_CN)
+  assert.ok(global, 'Global profile must exist')
+  assert.ok(cn, 'CN profile must exist')
+  assert.equal(global.label, 'MiniMax (Global)')
+  assert.equal(global.oauthBaseUrl, 'https://account.minimax.io')
+  assert.equal(global.inferenceBaseUrl, 'https://api.minimax.io/anthropic')
+  assert.equal(global.envVar, MINIMAX_INFERENCE_ENV_VAR)
+  assert.equal(cn.label, 'MiniMax (CN)')
+  assert.equal(cn.oauthBaseUrl, 'https://account.minimaxi.com')
+  assert.equal(cn.inferenceBaseUrl, 'https://api.minimaxi.com/anthropic')
+  assert.equal(cn.envVar, MINIMAX_INFERENCE_ENV_VAR_CN)
+  // A shared env var would let one region's login overwrite the other's.
+  assert.notEqual(global.envVar, cn.envVar)
+})
 
 test('PKCE: verifier, challenge, and state are well-formed and distinct', async () => {
   const a = await generatePkcePair()
@@ -158,7 +191,7 @@ test('expiredInToUnixSeconds: TTL seconds vs absolute millis', () => {
 })
 
 test('FileCredentialStore: round-trip and clear', async () => {
-  const tmp = `/tmp/minimax-oauth-test-${process.pid}-${Date.now()}.json`
+  const tmp = tmpFile('roundtrip')
   const store = new FileCredentialStore(tmp)
   try {
     assert.equal(await store.read('minimax'), undefined)
@@ -190,7 +223,7 @@ test('FileCredentialStore: round-trip and clear', async () => {
 })
 
 test('resolveAccessToken: returns access_token when not near expiry', async () => {
-  const tmp = `/tmp/minimax-oauth-test-${process.pid}-${Date.now()}-fresh.json`
+  const tmp = tmpFile('fresh')
   const store = new FileCredentialStore(tmp)
   try {
     await store.write({
@@ -212,7 +245,7 @@ test('resolveAccessToken: returns access_token when not near expiry', async () =
 })
 
 test('resolveAccessToken: throws when not logged in', async () => {
-  const tmp = `/tmp/minimax-oauth-test-${process.pid}-${Date.now()}-none.json`
+  const tmp = tmpFile('none')
   const store = new FileCredentialStore(tmp)
   try {
     await assert.rejects(
@@ -225,7 +258,7 @@ test('resolveAccessToken: throws when not logged in', async () => {
 })
 
 test('resolveAccessToken: refreshes when within skew', async () => {
-  const tmp = `/tmp/minimax-oauth-test-${process.pid}-${Date.now()}-skew.json`
+  const tmp = tmpFile('skew')
   const store = new FileCredentialStore(tmp)
   const original = globalThis.fetch
   try {
@@ -265,7 +298,7 @@ test('resolveAccessToken: refreshes when within skew', async () => {
 })
 
 test('refreshAccessToken: invalid_grant sets reloginRequired', async () => {
-  const tmp = `/tmp/minimax-oauth-test-${process.pid}-${Date.now()}-relogin.json`
+  const tmp = tmpFile('relogin')
   const store = new FileCredentialStore(tmp)
   const original = globalThis.fetch
   try {

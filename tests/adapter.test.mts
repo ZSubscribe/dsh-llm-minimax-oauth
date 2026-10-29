@@ -21,7 +21,9 @@ import {
   readSerializedToken,
   DEFAULT_PROVIDER_PROFILES,
   MINIMAX_INFERENCE_ENV_VAR,
+  MINIMAX_INFERENCE_ENV_VAR_CN,
   MINIMAX_PROVIDER_ID,
+  MINIMAX_PROVIDER_ID_CN,
   MessageId,
   ToolCallId,
 } from '../lib/index.mjs'
@@ -191,6 +193,52 @@ test('adapter: stream() emits Authorization: Bearer with the access token', asyn
     assert.equal(usage.usage.totalTokens, 4)
   } finally {
     delete process.env[MINIMAX_INFERENCE_ENV_VAR]
+    delete globalThis.fetch
+  }
+})
+
+test('adapter: CN adapter talks to api.minimaxi.com and reports the CN label', async () => {
+  const token = makeValidToken({
+    inference_base_url: 'https://api.minimaxi.com/anthropic',
+    oauth_base_url: 'https://account.minimaxi.com',
+  })
+  process.env[MINIMAX_INFERENCE_ENV_VAR_CN] = JSON.stringify(token)
+
+  let capturedUrl = ''
+  let capturedAuth = ''
+
+  globalThis.fetch = async (url, init) => {
+    capturedUrl = String(url)
+    capturedAuth = init.headers.authorization
+    return sseResponse([
+      'event: message_start\\ndata: {"type":"message_start","message":{"id":"msg_cn","type":"message","role":"assistant","content":[],"model":"MiniMax-M3","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}',
+      'event: message_delta\\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+      'event: message_stop\\ndata: {"type":"message_stop"}',
+    ])
+  }
+
+  try {
+    const adapter = new MiniMaxAdapter({
+      envVar: MINIMAX_INFERENCE_ENV_VAR_CN,
+      providerId: MINIMAX_PROVIDER_ID_CN,
+      displayName: 'MiniMax (CN) OAuth',
+      store: undefined,
+    })
+    for await (const _chunk of adapter.stream({
+      provider: MINIMAX_PROVIDER_ID_CN,
+      model: 'MiniMax-M3',
+      messages: [userMessage('hi')],
+    })) {
+      // drain
+    }
+
+    assert.equal(capturedUrl, 'https://api.minimaxi.com/anthropic/v1/messages')
+    assert.equal(capturedAuth, `Bearer ${token.access}`)
+    assert.equal(adapter.providerInfo(MINIMAX_PROVIDER_ID_CN).name, 'MiniMax (CN) OAuth')
+    // The CN adapter must not touch the Global region's credential.
+    assert.equal(process.env[MINIMAX_INFERENCE_ENV_VAR], undefined)
+  } finally {
+    delete process.env[MINIMAX_INFERENCE_ENV_VAR_CN]
     delete globalThis.fetch
   }
 })
@@ -629,9 +677,18 @@ test('adapter: stream() rejects when provider id does not match', async () => {
   }
 })
 
-test('DEFAULT_PROVIDER_PROFILES: single global profile with correct endpoints', () => {
-  assert.equal(DEFAULT_PROVIDER_PROFILES.length, 1)
-  const profile = DEFAULT_PROVIDER_PROFILES[0]
-  assert.equal(profile.oauthBaseUrl, 'https://account.minimax.io')
-  assert.equal(profile.inferenceBaseUrl, 'https://api.minimax.io/anthropic')
+test('DEFAULT_PROVIDER_PROFILES: Global and CN profiles with correct endpoints', () => {
+  assert.equal(DEFAULT_PROVIDER_PROFILES.length, 2)
+  const global = DEFAULT_PROVIDER_PROFILES.find((p) => p.id === MINIMAX_PROVIDER_ID)
+  const cn = DEFAULT_PROVIDER_PROFILES.find((p) => p.id === MINIMAX_PROVIDER_ID_CN)
+  assert.ok(global, 'Global profile must exist')
+  assert.ok(cn, 'CN profile must exist')
+  assert.equal(global.label, 'MiniMax (Global)')
+  assert.equal(global.oauthBaseUrl, 'https://account.minimax.io')
+  assert.equal(global.inferenceBaseUrl, 'https://api.minimax.io/anthropic')
+  assert.equal(global.envVar, MINIMAX_INFERENCE_ENV_VAR)
+  assert.equal(cn.label, 'MiniMax (CN)')
+  assert.equal(cn.oauthBaseUrl, 'https://account.minimaxi.com')
+  assert.equal(cn.inferenceBaseUrl, 'https://api.minimaxi.com/anthropic')
+  assert.equal(cn.envVar, MINIMAX_INFERENCE_ENV_VAR_CN)
 })

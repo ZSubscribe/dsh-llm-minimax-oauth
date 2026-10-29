@@ -143,7 +143,7 @@ export default function OauthSection(props: OauthSectionProps = {}) {
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <header style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <h3 style={{ margin: 0 }}>{props.title ?? 'MiniMax (Global OAuth)'}</h3>
+        <h3 style={{ margin: 0 }}>{props.title ?? 'MiniMax OAuth'}</h3>
         <button onClick={refresh} disabled={!!busy}>
           Refresh
         </button>
@@ -181,7 +181,7 @@ export default function OauthSection(props: OauthSectionProps = {}) {
               </button>
             ) : (
               <button onClick={() => startLogin(entry.provider.id)} disabled={!!busy}>
-                {busy === entry.provider.id ? 'Waiting for browser…' : 'Login with MiniMax'}
+                {busy === entry.provider.id ? 'Waiting for browser…' : `Login with ${entry.provider.label}`}
               </button>
             )}
           </div>
