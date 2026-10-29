@@ -18,8 +18,19 @@
  * shape (`{ inject: ['slots'], apply(ctx) { ctx.slots.inject(...) } }`),
  * and so is the ui-settings-general plugin which renders this exact
  * `settings.section` slot the package owns. The React component is
- * registered through `slots.register` inside `apply`, not re-exported as
- * a default value.
+ * registered through `slots.inject` + `slots.register` inside `apply`,
+ * not re-exported as a default value.
+ *
+ * `settings.section` is declared by ui-settings-general as a child of the
+ * `sidebar.settings` slot it registers. Client plugin activation order is
+ * not guaranteed, so a direct `slots.register` from this plugin can run
+ * before that declaration and throws `slot "settings.section" is not
+ * declared` — which fails this plugin's fiber and, in DSH 0.2.1-rc.3,
+ * aborts the whole web boot ("web boot: 1 entry did not activate").
+ * `slots.inject(key, callback)` parks the contribution on the caller's
+ * fiber until the slot is declared and disposes it again if the
+ * declaration collapses, which is the supported way to contribute to a
+ * slot owned by another plugin.
  *
  * @module dsh-llm-minimax-oauth/client/apply
  */
@@ -35,6 +46,12 @@ import OauthSection from './index.tsx'
  */
 type ClientContextWithSlots = Context & {
   slots: {
+    /**
+     * Contribute to a slot owned by another plugin. The callback runs once
+     * the slot is declared (synchronously if it already is), and its
+     * disposer runs when the declaration collapses or this fiber unloads.
+     */
+    inject: (key: string, callback: () => (() => void) | void) => () => void
     register: (
       entry: {
         name: string
@@ -64,15 +81,23 @@ export const apply = (ctx: Context): (() => void) | void => {
   // `ctx.slots` is reachable because `slots` is declared in `inject`
   // above; reading through the Reflect proxy now resolves to the runtime
   // slot registry instead of throwing. The cast narrows the static type to
-  // what `slots.register` accepts; the runtime dispatch is unchanged.
+  // what `slots.inject` / `slots.register` accept; the runtime dispatch is
+  // unchanged.
   const clientCtx = ctx as ClientContextWithSlots
-  return clientCtx.slots.register(
-    {
-      name: 'settings.section',
-      id: 'minimax-oauth',
-      order: 50,
-      label: () => 'MiniMax OAuth',
-    },
-    OauthSection,
+  // Never call `register` directly here: activation order can put this
+  // plugin's apply before ui-settings-general declares `settings.section`,
+  // and SlotRegistry.register throws on an undeclared slot (killing the
+  // client fiber and the whole web boot). `inject` waits for the
+  // declaration, then registers on this fiber's behalf.
+  return clientCtx.slots.inject('settings.section', () =>
+    clientCtx.slots.register(
+      {
+        name: 'settings.section',
+        id: 'minimax-oauth',
+        order: 50,
+        label: () => 'MiniMax OAuth',
+      },
+      OauthSection,
+    ),
   )
 }

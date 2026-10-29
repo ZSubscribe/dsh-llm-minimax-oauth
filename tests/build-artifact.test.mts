@@ -97,11 +97,19 @@ test('build artifact: client bundle declares slots in inject (cordis property pr
     /exports\.inject\s*=\s*inject/,
     'plugin name/inject/apply must be on module.exports so the host loader can compose them',
   )
-  // apply must read ctx.slots directly (no defensive fallback), confirming
-  // the plugin trusts the declared inject.
+  // apply must defer through slots.inject: `settings.section` is declared by
+  // ui-settings-general, and activation order is not guaranteed. A direct
+  // register can run before the declaration and throws
+  // `slot "settings.section" is not declared`, which failed this plugin's
+  // client fiber and aborted web boot ("web boot: 1 entry did not activate").
   assert.match(
     source,
-    /return\s+ctx\.slots\.register\(/,
-    'apply must reach ctx.slots without a typeof guard — the declared inject is the only required contract',
+    /return\s+clientCtx\.slots\.inject\(\s*["']settings\.section["']/,
+    'apply must register the settings section through slots.inject (slot is declared by ui-settings-general)',
+  )
+  assert.match(
+    source,
+    /clientCtx\.slots\.register\(/,
+    'the deferred callback must still register the MiniMax OAuth settings section',
   )
 })
