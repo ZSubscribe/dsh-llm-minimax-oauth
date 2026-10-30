@@ -12,7 +12,7 @@
  * the rest of the request body, the SSE parsing, and the harness
  * `StreamChunk` vocabulary stay identical to a first-party Anthropic client.
  *
- * Harness contract implemented here (DSH `0.2.1-rc.3`):
+ * Harness contract implemented here (DSH `0.2.1-rc.5`):
  *   - `LlmAdapter` from `@deepseek-ai/dsh-llm`: `providerInfo`,
  *     `providerRetryPolicy`, `listModels`, `resolveModel`, `stream`.
  *   - The `0.2.x` message model: `GenerateOptions.messages` carries a

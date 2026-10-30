@@ -25,7 +25,7 @@
  * `sidebar.settings` slot it registers. Client plugin activation order is
  * not guaranteed, so a direct `slots.register` from this plugin can run
  * before that declaration and throws `slot "settings.section" is not
- * declared` — which fails this plugin's fiber and, in DSH 0.2.1-rc.3,
+ * declared` — which fails this plugin's fiber and, in DSH 0.2.1,
  * aborts the whole web boot ("web boot: 1 entry did not activate").
  * `slots.inject(key, callback)` parks the contribution on the caller's
  * fiber until the slot is declared and disposes it again if the
