@@ -43,7 +43,7 @@
  *     background and writes to the store on success; the client polls
  *     `GET /status` until `logged_in` flips.
  *
- * Harness contract implemented here (DSH `0.2.1-rc.5`):
+ * Harness contract implemented here (DSH `0.2.2-rc.1`):
  *   - `ctx.llm.registerAdapter(providers, adapter)` and
  *     `ctx.llm.registerConfigurableProviders(entries)` keep their shapes;
  *     the configurable-provider entry gained `defaultBaseURL` and

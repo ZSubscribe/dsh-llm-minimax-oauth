@@ -1,5 +1,5 @@
 /**
- * Regression coverage for the DSH 0.2.1-rc.3 web-boot failure:
+ * Regression coverage for the DSH 0.2.x web-boot failure:
  *
  *   Error: web boot: 1 entry did not activate
  *   dsh-llm-minimax-oauth: failed

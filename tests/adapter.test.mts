@@ -7,7 +7,7 @@
  * `StreamChunk` protocol. The tests never hit a real MiniMax endpoint and
  * never use a real OAuth token.
  *
- * Harness vocabulary exercised here (DSH `0.2.1-rc.3`):
+ * Harness vocabulary exercised here (DSH `0.2.2-rc.1`):
  *   - `GenerateOptions.messages` is a role-tagged union: a system prompt
  *     arrives as a leading `role: 'system'` message, a tool result as its own
  *     `role: 'tool'` message, and tool-change blocks as a `role: 'developer'`
