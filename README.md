@@ -41,6 +41,7 @@ separate route ids so the two authentication channels never collide.
 - [Security](#security)
 - [Uninstall](#uninstall)
 - [For Plugin Authors](#for-plugin-authors)
+- [Maintenance](#maintenance)
 - [API Reference](#api-reference)
 - [Reference](#reference)
 - [License](#license)
@@ -327,6 +328,51 @@ The plugin also shows the **2-phase OAuth pattern**: server returns
 device-code + user code immediately, browser opens the URL, polling
 runs in the background. Avoid blocking the HTTP request on long-running
 device-code flows.
+
+## Maintenance
+
+DSH ships new version lines often, and its packages pin their peers to exact
+versions — a stale peer range makes DSH silently skip the plugin at boot.
+Instead of hunting version strings by hand, bump everything with one command:
+
+```bash
+# preview only
+npm run sync-dsh -- 0.2.2-rc.1 --dry-run
+
+# update + clean install + rebuild + run all suites
+npm run sync-dsh -- 0.2.2-rc.1
+```
+
+The script ([`scripts/sync-dsh-versions.mjs`](scripts/sync-dsh-versions.mjs))
+updates:
+
+- `package.json` `version` (derived from the DSH version: `0.2.2-rc.1` → `0.2.2`)
+- the four `@deepseek-ai/dsh-*` peerDependencies
+- the `@deepseek-ai/cordis` peer range and the `@earendil-works/pi-ai`
+  dependency range, copied from the published `dsh-llm` / `dsh-llm-pi-ai`
+  manifests
+- the README badge, prerequisites bullet, compatibility paragraph and
+  release-convention line
+- `DSH`-prefixed version references in source and test comments
+- `package-lock.json`, `node_modules/` and `lib/` (clean install, rebuild,
+  all test suites)
+
+Useful flags: `--no-install`, `--no-build`, `--no-test`, `--cordis <range>`,
+`--pi-ai <range>`, `--plugin-version <version>`.
+
+Upstream releases occasionally remove client packages (0.2.2 dropped
+`@deepseek-ai/dsh-client-runtime`). The script does not guess those
+structural changes — if a release removes one, update `dsh.client.inject` /
+`dsh.client.external` in `package.json` and `CLIENT_EXTERNALS` in
+`tsdown.config.ts` by hand. Finish with:
+
+```bash
+git add -A
+git commit -m "chore: support DeepSeek Harness <version>"
+git push origin main
+```
+
+Then fully quit and restart DSH so the rebuilt `lib/` is loaded.
 
 ## API Reference
 

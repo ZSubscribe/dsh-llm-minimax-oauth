@@ -87,7 +87,8 @@
     "build": "tsdown --config tsdown.config.ts",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.mts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "login": "node bin/login.mjs"
+    "login": "node bin/login.mjs",
+    "sync-dsh": "node scripts/sync-dsh-versions.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
