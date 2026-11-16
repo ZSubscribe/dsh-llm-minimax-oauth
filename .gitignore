@@ -38,3 +38,6 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local npm cache (registry reads on this machine)
+.npm-cache/

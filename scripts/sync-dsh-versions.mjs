@@ -2,10 +2,10 @@
 /**
  * One-command DeepSeek Harness version bump for this plugin.
  *
- *   npm run sync-dsh -- 0.2.2-rc.1
+ *   npm run sync-dsh -- 0.2.2-rc.3
  *
  * It updates, in one pass:
- *   - package.json version (derived from the DSH version, e.g. 0.2.2-rc.1 -> 0.2.2)
+ *   - package.json version (derived from the DSH version, e.g. 0.2.2-rc.3 -> 0.2.2)
  *   - the four @deepseek-ai/dsh-* peerDependencies
  *   - @deepseek-ai/cordis peer range (copied from dsh-llm's own peer range)
  *   - @earendil-works/pi-ai dependency range (copied from dsh-llm-pi-ai)
@@ -49,15 +49,15 @@ export const PI_AI_PACKAGE = '@earendil-works/pi-ai'
 
 const DSH_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/
 
-/** `0.2.2-rc.1` -> `0.2.2`; throws on anything that is not a DSH version. */
+/** `0.2.2-rc.3` -> `0.2.2`; throws on anything that is not a DSH version. */
 export function derivePluginVersion(dshVersion) {
   if (!DSH_VERSION_RE.test(dshVersion)) {
-    throw new Error(`not a DSH version: "${dshVersion}" (expected e.g. 0.2.2-rc.1)`)
+    throw new Error(`not a DSH version: "${dshVersion}" (expected e.g. 0.2.2-rc.3)`)
   }
   return dshVersion.split('-')[0]
 }
 
-/** `0.2.2-rc.1` -> `0.2.2--rc.1` (shields.io badge encoding). */
+/** `0.2.2-rc.3` -> `0.2.2--rc.3` (shields.io badge encoding). */
 export function badgeVersion(dshVersion) {
   return dshVersion.replace(/-/g, '--')
 }
@@ -130,7 +130,7 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`Usage: npm run sync-dsh -- <dsh-version> [options]
 
-  <dsh-version>                e.g. 0.2.2-rc.1
+  <dsh-version>                e.g. 0.2.2-rc.3
 
 Options:
   --cordis <range|version>     override the cordis peer range
