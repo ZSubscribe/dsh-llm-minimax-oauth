@@ -5,11 +5,13 @@
  *   npm run sync-dsh -- 0.2.2-rc.3
  *
  * It updates, in one pass:
- *   - package.json version (derived from the DSH version, e.g. 0.2.2-rc.3 -> 0.2.2)
+ *   - package.json version (the DSH version itself: one plugin build per DSH build)
  *   - the four @deepseek-ai/dsh-* peerDependencies
+ *   - `engines.dsh` (the exact DSH build this plugin targets)
  *   - @deepseek-ai/cordis peer range (copied from dsh-llm's own peer range)
  *   - @earendil-works/pi-ai dependency range (copied from dsh-llm-pi-ai)
  *   - README badge / prerequisites / compatibility version strings
+ *   - the version matrix in docs/VERSIONS.md
  *   - `DSH \`<version>\`` references in source and test comments
  *   - package-lock.json, node_modules, lib/ (clean install + rebuild + tests)
  *
@@ -17,6 +19,7 @@
  *   --cordis <range|version>    override the cordis peer range (bare version -> ~x.y.z)
  *   --pi-ai <range>             override the @earendil-works/pi-ai dependency range
  *   --plugin-version <version>  override the derived plugin version
+ *   --branch <name>             branch recorded in the version matrix (default: main)
  *   --no-install                skip the clean npm install
  *   --no-build                  skip `npm run build`
  *   --no-test                   skip the test suites
@@ -49,12 +52,24 @@ export const PI_AI_PACKAGE = '@earendil-works/pi-ai'
 
 const DSH_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/
 
-/** `0.2.2-rc.3` -> `0.2.2`; throws on anything that is not a DSH version. */
+/**
+ * `0.2.2-rc.3` -> `0.2.2-rc.3`; throws on anything that is not a DSH version.
+ *
+ * The plugin version IS the DSH version. The harness refuses a plugin whose
+ * `@deepseek-ai/dsh-*` peers do not match the running runtime, and it keys
+ * plugin identity (and its version exemptions) by `name@version` — so one
+ * plugin build serves exactly one DSH build, and its version has to say which
+ * one. A plugin version derived from the DSH version keeps the two in lockstep
+ * instead of letting two different builds share `0.2.2`.
+ *
+ * @param {string} dshVersion - the exact DSH version this build targets.
+ * @returns {string} the plugin version for that DSH build.
+ */
 export function derivePluginVersion(dshVersion) {
   if (!DSH_VERSION_RE.test(dshVersion)) {
     throw new Error(`not a DSH version: "${dshVersion}" (expected e.g. 0.2.2-rc.3)`)
   }
-  return dshVersion.split('-')[0]
+  return dshVersion
 }
 
 /** `0.2.2-rc.3` -> `0.2.2--rc.3` (shields.io badge encoding). */
@@ -64,27 +79,27 @@ export function badgeVersion(dshVersion) {
 
 /** Rewrite the version strings that the README keeps in sync. */
 export function rewriteReadme(text, dshVersion) {
-  const base = derivePluginVersion(dshVersion)
   let out = text
   // shields.io badge: keep the trailing colour suffix (`-blueviolet`).
   out = out.replace(
     /DeepSeek%20Harness-\d+\.\d+\.\d+(?:--[0-9A-Za-z.]+)?/,
     `DeepSeek%20Harness-${badgeVersion(dshVersion)}`,
   )
-  // Prerequisites bullet: "- **DeepSeek Harness** `x` ..."
+  // Prerequisites bullet: "- **DeepSeek Harness** `x` ..." plus its indented
+  // continuation lines.
   out = out.replace(
-    /- \*\*DeepSeek Harness\*\* `[^`]+`/,
-    `- **DeepSeek Harness** \`${dshVersion}\``,
+    /- \*\*DeepSeek Harness\*\* `[^`]+`[^\n]*(?:\n[ \t]+[^\n]*)*/,
+    [
+      `- **DeepSeek Harness** \`${dshVersion}\` (this build targets exactly this`,
+      '  harness version — the harness refuses a plugin whose declared DSH',
+      '  requirement does not match the running runtime; see',
+      '  [Versions](#versions) for the build that matches yours)',
+    ].join('\n'),
   )
   // Harness compatibility: "This plugin targets **DeepSeek Harness `x`**."
   out = out.replace(
     /targets \*\*DeepSeek Harness `[^`]+`\*\*/,
     `targets **DeepSeek Harness \`${dshVersion}\`**`,
-  )
-  // "... matching the DSH\n  `x.y.z` release convention ..." uses the base version.
-  out = out.replace(
-    /matching the DSH\s*\n?\s*`[^`]+` release convention/,
-    `matching the DSH\n  \`${base}\` release convention`,
   )
   return out
 }
@@ -92,6 +107,69 @@ export function rewriteReadme(text, dshVersion) {
 /** Rewrite `DSH `<version>`` references in source/test doc comments. */
 export function rewriteDocVersions(text, dshVersion) {
   return text.replace(/\bDSH `[^`\n]+`/g, `DSH \`${dshVersion}\``)
+}
+
+const MATRIX_HEADER = [
+  '| DSH version | Plugin version | Git tag | Branch |',
+  '| --- | --- | --- | --- |',
+]
+
+/**
+ * Build one row of the version matrix.
+ *
+ * @param {{ dshVersion: string, pluginVersion: string, branch: string, tag?: string }} entry
+ * @returns {string} the markdown table row.
+ */
+export function versionMatrixRow({ dshVersion, pluginVersion, branch, tag = `v${pluginVersion}` }) {
+  return `| \`${dshVersion}\` | \`${pluginVersion}\` | \`${tag}\` | \`${branch}\` |`
+}
+
+/**
+ * Insert or update this build's row in the version matrix.
+ *
+ * The matrix is the release ledger: one row per DeepSeek Harness build, so a
+ * user can pick the plugin build that matches their harness. Rows are kept in
+ * descending DSH-version order.
+ *
+ * @param {string} text - the current docs/VERSIONS.md content.
+ * @param {{ dshVersion: string, pluginVersion: string, branch: string, tag?: string }} entry
+ * @returns {string} the updated markdown.
+ */
+export function rewriteVersionsMatrix(text, entry) {
+  const row = versionMatrixRow(entry)
+  const lines = text.split('\n')
+  const headerIndex = lines.findIndex((line) => line.startsWith('| DSH version |'))
+  if (headerIndex === -1) {
+    const table = [...MATRIX_HEADER, row].join('\n')
+    return `${text.replace(/\s*$/, '')}\n\n${table}\n`
+  }
+  const endIndex = (() => {
+    let index = headerIndex + 2
+    while (index < lines.length && lines[index].startsWith('|')) index += 1
+    return index
+  })()
+  const rows = lines.slice(headerIndex + 2, endIndex)
+  const kept = rows.filter((line) => !line.includes(`\`${entry.dshVersion}\``))
+  const all = [...kept, row].sort((a, b) => compareVersions(b, a))
+  return [...lines.slice(0, headerIndex + 2), ...all, ...lines.slice(endIndex)].join('\n')
+}
+
+/** Compare two dotted versions, treating a prerelease as older than its release. */
+export function compareVersions(a, b) {
+  const parse = (value) => {
+    const [core, prerelease = ''] = value.split('-')
+    const parts = core.split('.').map((part) => Number.parseInt(part, 10) || 0)
+    return { parts, prerelease }
+  }
+  const left = parse(a)
+  const right = parse(b)
+  for (let i = 0; i < 3; i += 1) {
+    if (left.parts[i] !== right.parts[i]) return left.parts[i] - right.parts[i]
+  }
+  if (left.prerelease === right.prerelease) return 0
+  if (!left.prerelease) return 1
+  if (!right.prerelease) return -1
+  return left.prerelease.localeCompare(right.prerelease)
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +198,7 @@ function parseArgs(argv) {
     else if (arg === '--cordis') args.cordis = argv[(i += 1)]
     else if (arg === '--pi-ai') args.piAi = argv[(i += 1)]
     else if (arg === '--plugin-version') args.pluginVersion = argv[(i += 1)]
+    else if (arg === '--branch') args.branch = argv[(i += 1)]
     else if (arg === '--help' || arg === '-h') args.help = true
     else if (arg.startsWith('-')) fail(`unknown option: ${arg}`)
     else args.positional.push(arg)
@@ -135,7 +214,8 @@ function printHelp() {
 Options:
   --cordis <range|version>     override the cordis peer range
   --pi-ai <range>              override the @earendil-works/pi-ai range
-  --plugin-version <version>   override the plugin version (default: DSH base)
+  --plugin-version <version>   override the plugin version (default: the DSH version)
+  --branch <name>              branch recorded in the version matrix (default: main)
   --no-install                 skip the clean npm install
   --no-build                   skip npm run build
   --no-test                    skip the test suites
@@ -285,6 +365,10 @@ async function main() {
 
   note('version', pkg.version, pluginVersion)
   pkg.version = pluginVersion
+  // The harness checks `engines.dsh` first and ignores the peers when it is
+  // present, so this is the single statement of "which harness build am I".
+  note('engines.dsh', pkg.engines?.dsh, dshVersion)
+  pkg.engines = { ...pkg.engines, dsh: dshVersion }
   for (const name of DSH_PEER_PACKAGES) {
     note(`peer ${name}`, pkg.peerDependencies?.[name], dshVersion)
     pkg.peerDependencies[name] = dshVersion
@@ -307,6 +391,18 @@ async function main() {
 
   const readmePath = path.join(ROOT, 'README.md')
   addWrite(readmePath, rewriteReadme(fs.readFileSync(readmePath, 'utf8'), dshVersion))
+
+  const matrixPath = path.join(ROOT, 'docs', 'VERSIONS.md')
+  if (fs.existsSync(matrixPath)) {
+    addWrite(
+      matrixPath,
+      rewriteVersionsMatrix(fs.readFileSync(matrixPath, 'utf8'), {
+        dshVersion,
+        pluginVersion,
+        branch: args.branch ?? 'main',
+      }),
+    )
+  }
 
   for (const file of collectDocFiles()) {
     const previous = fs.readFileSync(file, 'utf8')
@@ -349,7 +445,8 @@ Done: plugin ${pkg.version} now targets DeepSeek Harness ${dshVersion}.
 Next:
   git add -A
   git commit -m "chore: support DeepSeek Harness ${dshVersion}"
-  git push origin main
+  git tag -a v${pkg.version} -m "DeepSeek Harness ${dshVersion}"
+  git push origin ${args.branch ?? 'main'} --tags
 
 Then fully quit and restart DSH so the new lib/ bundle is loaded.`)
 }

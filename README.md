@@ -32,6 +32,7 @@ separate route ids so the two authentication channels never collide.
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
+- [Versions](#versions)
 - [Harness compatibility](#harness-compatibility)
 - [Install](#install)
 - [Use](#use)
@@ -48,9 +49,10 @@ separate route ids so the two authentication channels never collide.
 
 ## Prerequisites
 
-- **DeepSeek Harness** `0.2.2-rc.3` (pinned exactly, matching the DSH
-  `0.2.2` release convention where the harness packages pin their peers to
-  an exact version)
+- **DeepSeek Harness** `0.2.2-rc.3` (this build targets exactly this
+  harness version — the harness refuses a plugin whose declared DSH
+  requirement does not match the running runtime; see
+  [Versions](#versions) for the build that matches yours)
 - **Node.js** `^22.19.0` or `>=24.0.0`
 - A MiniMax account with an active **Coding Plan** or **Credits** balance
   on [platform.minimax.io](https://platform.minimax.io) (Global) or
@@ -58,6 +60,30 @@ separate route ids so the two authentication channels never collide.
   account matching the endpoint you intend to sign in to.
 - A modern browser with popups enabled (or willingness to copy the
   authorization URL manually — see [Troubleshooting](#browser-does-not-open-automatically))
+
+## Versions
+
+This plugin ships **one build per DeepSeek Harness build**. The harness
+refuses to load a plugin whose declared DSH requirement does not match the
+running runtime, and it identifies a plugin by `name@version` — so one build
+cannot serve two harness builds.
+
+Check which harness you run (`dsh --version`, or read `desktopVersion` from
+`resources/runtime/primary-runtime/runtime.json` in your DeepSeek Harness
+installation), then take the build that matches it:
+
+| DSH version | Plugin version | Git tag | Branch |
+| --- | --- | --- | --- |
+| `0.2.2-rc.3` | `0.2.2-rc.3` | `v0.2.2-rc.3` | `main` |
+
+Install the matching build by pinning its tag:
+
+```sh
+dsh plugin --profile web add "https://github.com/ZSubscribe/dsh-llm-minimax-oauth.git#v0.2.2-rc.3"
+```
+
+The full matrix, including older builds, lives in
+[`docs/VERSIONS.md`](docs/VERSIONS.md).
 
 ## Harness compatibility
 
@@ -111,6 +137,9 @@ A git install may ask you to allow `prepare` in the profile's
 allowBuilds:
   dsh-llm-minimax-oauth: true
 ```
+
+`prepare` runs the build, so a Git install ships a working `lib/` even though
+the build output is not committed.
 
 When the plugin ships via npm (future), the same command resolves the
 package from your registry instead of the local path.
@@ -331,9 +360,10 @@ device-code flows.
 
 ## Maintenance
 
-DSH ships new version lines often, and its packages pin their peers to exact
-versions — a stale peer range makes DSH silently skip the plugin at boot.
-Instead of hunting version strings by hand, bump everything with one command:
+DSH ships new version lines often, and it refuses to load a plugin whose
+declared DSH requirement does not match the running runtime — a stale version
+string makes DSH skip the plugin at boot. Instead of hunting version strings
+by hand, bump everything with one command:
 
 ```bash
 # preview only
@@ -346,19 +376,23 @@ npm run sync-dsh -- 0.2.2-rc.3
 The script ([`scripts/sync-dsh-versions.mjs`](scripts/sync-dsh-versions.mjs))
 updates:
 
-- `package.json` `version` (derived from the DSH version: `0.2.2-rc.3` → `0.2.2`)
-- the four `@deepseek-ai/dsh-*` peerDependencies
+- `package.json` `version` — the plugin version **is** the DSH version, so one
+  build serves exactly one harness build and the `name@version` identity stays
+  unambiguous
+- `package.json` `engines.dsh` — the exact harness build this plugin targets
+  (the harness checks this field first and ignores the peer ranges)
+- the four `@deepseek-ai/dsh-*` peerDependencies, pinned to the same version
 - the `@deepseek-ai/cordis` peer range and the `@earendil-works/pi-ai`
   dependency range, copied from the published `dsh-llm` / `dsh-llm-pi-ai`
   manifests
-- the README badge, prerequisites bullet, compatibility paragraph and
-  release-convention line
+- the README badge, prerequisites bullet, compatibility paragraph
+- the version matrix in [`docs/VERSIONS.md`](docs/VERSIONS.md)
 - `DSH`-prefixed version references in source and test comments
 - `package-lock.json`, `node_modules/` and `lib/` (clean install, rebuild,
   all test suites)
 
 Useful flags: `--no-install`, `--no-build`, `--no-test`, `--cordis <range>`,
-`--pi-ai <range>`, `--plugin-version <version>`.
+`--pi-ai <range>`, `--plugin-version <version>`, `--branch <name>`.
 
 Upstream releases occasionally remove client packages (0.2.2 dropped
 `@deepseek-ai/dsh-client-runtime`). The script does not guess those
@@ -369,7 +403,8 @@ structural changes — if a release removes one, update `dsh.client.inject` /
 ```bash
 git add -A
 git commit -m "chore: support DeepSeek Harness <version>"
-git push origin main
+git tag -a v<version> -m "DeepSeek Harness <version>"
+git push origin main --tags
 ```
 
 Then fully quit and restart DSH so the rebuilt `lib/` is loaded.

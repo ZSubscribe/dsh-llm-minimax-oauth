@@ -39,7 +39,6 @@ import {
   ToolCallId,
 } from '@deepseek-ai/dsh-llm'
 import type {
-  BuiltinLlmFailureCode,
   ContentBlock,
   FinishReason,
   GenerateOptions,
@@ -422,6 +421,33 @@ function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
 }
 
 /**
+ * The harness failure codes this route can raise.
+ *
+ * The codes are the harness' own vocabulary, spelled out locally instead of
+ * imported: `@deepseek-ai/dsh-llm` only publishes the `BuiltinLlmFailureCode`
+ * union from `0.2.2-rc.3` on, while the runtime accepts any non-empty code
+ * string. Naming them here keeps one source tree buildable against every
+ * `0.2.x` harness line, and every code listed is a member of the harness'
+ * built-in table (see `LLM_FAILURE_CODES` in `@deepseek-ai/dsh-llm`), so the
+ * harness routes on them exactly as it does for its own adapters.
+ */
+export type MiniMaxFailureCode =
+  | 'ABORTED'
+  | 'AUTH'
+  | 'CONTEXT_WINDOW_EXCEEDED'
+  | 'EMPTY_RESPONSE'
+  | 'INVALID_REQUEST'
+  | 'INVALID_RESPONSE'
+  | 'MALFORMED_RESPONSE'
+  | 'MISSING_CREDENTIAL'
+  | 'RATE_LIMIT'
+  | 'SERVER'
+  | 'STREAM_CLOSED'
+  | 'TRANSPORT'
+  | 'UNKNOWN_MODEL'
+  | 'UNSUPPORTED_CONTENT'
+
+/**
  * Classify a provider-reported stream error into a built-in failure code.
  *
  * The harness routes on the code, so a provider error type must not be
@@ -430,7 +456,7 @@ function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
  * @param errorType - the provider's `error.type`, when it sent one.
  * @returns the built-in failure code for that error type.
  */
-function classifyStreamError(errorType: string | undefined): BuiltinLlmFailureCode {
+function classifyStreamError(errorType: string | undefined): MiniMaxFailureCode {
   switch (errorType) {
     case 'overloaded_error':
       return 'SERVER'

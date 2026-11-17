@@ -1,0 +1,65 @@
+name: Release
+
+# A release is a build for exactly one DeepSeek Harness build: the plugin
+# version equals the DSH version, and `engines.dsh` names that harness build.
+# The workflow fires on a `vX.Y.Z` tag and publishes the built plugin as a
+# tarball, so a user can install the build that matches their harness.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag $tag does not match package version $version" >&2
+            exit 1
+          fi
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test
+        run: |
+          for suite in tests/*.test.mts; do
+            node --experimental-strip-types "$suite"
+          done
+          node tests/smoke.mjs
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack the plugin
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+          mv dist/*.tgz "dist/dsh-llm-minimax-oauth-${GITHUB_REF_NAME#v}.tgz"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Build of dsh-llm-minimax-oauth for DeepSeek Harness $(node -p "require('./package.json').engines.dsh"). Install the build that matches your harness version: https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/docs/VERSIONS.md" \
+            dist/*.tgz

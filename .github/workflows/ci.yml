@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        # `npm test` spawns node:test children, which some CI sandboxes refuse;
+        # run every suite in-process instead.
+        run: |
+          for suite in tests/*.test.mts; do
+            node --experimental-strip-types "$suite"
+          done
+          node tests/smoke.mjs

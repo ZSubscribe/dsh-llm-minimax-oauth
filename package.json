@@ -1,12 +1,13 @@
 {
   "name": "dsh-llm-minimax-oauth",
   "description": "DeepSeek Harness plugin: MiniMax OAuth (Coding Plan) via browser login",
-  "version": "0.2.2",
+  "version": "0.2.2-rc.3",
   "private": false,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": "0.2.2-rc.3"
   },
   "main": "./lib/index.mjs",
   "types": "./lib/index.d.mts",
@@ -25,18 +26,19 @@
     "bin",
     "src",
     "cordis.patch.yml",
+    "docs",
     "README.md",
     "LICENSE"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ibam28/dsh-llm-minimax-oauth.git"
+    "url": "https://github.com/ZSubscribe/dsh-llm-minimax-oauth.git"
   },
   "bugs": {
-    "url": "https://github.com/ibam28/dsh-llm-minimax-oauth/issues"
+    "url": "https://github.com/ZSubscribe/dsh-llm-minimax-oauth/issues"
   },
-  "homepage": "https://github.com/ibam28/dsh-llm-minimax-oauth#readme",
+  "homepage": "https://github.com/ZSubscribe/dsh-llm-minimax-oauth#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -85,6 +87,7 @@
   },
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
+    "prepare": "npm run build",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.mts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "login": "node bin/login.mjs",
