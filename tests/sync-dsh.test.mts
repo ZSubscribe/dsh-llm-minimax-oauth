@@ -16,6 +16,7 @@ import {
   derivePluginVersion,
   rewriteDocVersions,
   rewriteReadme,
+  rewriteReadmeMatrix,
   rewriteVersionsMatrix,
   versionMatrixRow,
 } from '../scripts/sync-dsh-versions.mjs'
@@ -122,4 +123,43 @@ test('rewriteVersionsMatrix replaces the row of a DSH build it already lists', (
 
   assert.match(after, /\| `0\.2\.2-rc\.3` \| `0\.2\.2-rc\.3` \| `v0\.2\.2-rc\.3` \| `release\/dsh-0\.2\.2-rc\.3` \|/)
   assert.doesNotMatch(after, /\| `0\.2\.2-rc\.3` \| `0\.2\.2` \|/)
+})
+
+test('rewriteReadmeMatrix copies the ledger rows into the README table', () => {
+  const bt = String.fromCharCode(96)
+  const readme = [
+    '## Versions',
+    '',
+    '| DSH version | Plugin version | Git tag | Branch |',
+    '| --- | --- | --- | --- |',
+    `| ${bt}0.2.2-rc.3${bt} | ${bt}0.2.2-rc.3${bt} | ${bt}v0.2.2-rc.3${bt} | ${bt}main${bt} |`,
+    '',
+    'Install the matching build by pinning its tag:',
+    '',
+  ].join('\n')
+  const ledger = [
+    '| DSH version | Plugin version | Git tag | Branch |',
+    '| --- | --- | --- | --- |',
+    `| ${bt}0.2.2-rc.3${bt} | ${bt}0.2.2-rc.3${bt} | ${bt}v0.2.2-rc.3${bt} | ${bt}main${bt} |`,
+    `| ${bt}0.2.2-rc.1${bt} | ${bt}0.2.2-rc.1${bt} | ${bt}v0.2.2-rc.1${bt} | ${bt}release/dsh-0.2.2-rc.1${bt} |`,
+    '',
+  ].join('\n')
+
+  const after = rewriteReadmeMatrix(readme, ledger)
+
+  assert.match(after, /\| `0\.2\.2-rc\.1` \| `0\.2\.2-rc\.1` \| `v0\.2\.2-rc\.1` \| `release\/dsh-0\.2\.2-rc\.1` \|/)
+  // The table keeps exactly the header, the separator and the two rows.
+  assert.equal(after.split('\n').filter((line) => line.startsWith('|')).length, 4)
+  // Text outside the table is untouched.
+  assert.ok(after.includes('Install the matching build by pinning its tag:'))
+})
+
+test('rewriteReadmeMatrix leaves the README alone when the ledger has no rows', () => {
+  const readme = [
+    '| DSH version | Plugin version | Git tag | Branch |',
+    '| --- | --- | --- | --- |',
+    '',
+  ].join('\n')
+
+  assert.equal(rewriteReadmeMatrix(readme, '# Versions\n'), readme)
 })

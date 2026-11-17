@@ -154,6 +154,31 @@ export function rewriteVersionsMatrix(text, entry) {
   return [...lines.slice(0, headerIndex + 2), ...all, ...lines.slice(endIndex)].join('\n')
 }
 
+/**
+ * Copy the version-matrix rows from the ledger into the README table.
+ *
+ * `docs/VERSIONS.md` is the ledger every build appends to; the README carries
+ * the same table so a reader only has to open one file. Keeping the rows in
+ * one place stops the two tables from drifting apart.
+ *
+ * @param {string} text - the current README content.
+ * @param {string} matrixText - the current docs/VERSIONS.md content.
+ * @returns {string} the updated README content.
+ */
+export function rewriteReadmeMatrix(text, matrixText) {
+  const rows = matrixText.split('\n').filter((line) => /^\| `\d/.test(line))
+  if (rows.length === 0) return text
+  const lines = text.split('\n')
+  const headerIndex = lines.findIndex((line) => line.startsWith('| DSH version |'))
+  if (headerIndex === -1) return text
+  const endIndex = (() => {
+    let index = headerIndex + 2
+    while (index < lines.length && lines[index].startsWith('|')) index += 1
+    return index
+  })()
+  return [...lines.slice(0, headerIndex + 2), ...rows, ...lines.slice(endIndex)].join('\n')
+}
+
 /** Compare two dotted versions, treating a prerelease as older than its release. */
 export function compareVersions(a, b) {
   const parse = (value) => {
@@ -390,19 +415,24 @@ async function main() {
   addWrite(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
 
   const readmePath = path.join(ROOT, 'README.md')
-  addWrite(readmePath, rewriteReadme(fs.readFileSync(readmePath, 'utf8'), dshVersion))
-
   const matrixPath = path.join(ROOT, 'docs', 'VERSIONS.md')
-  if (fs.existsSync(matrixPath)) {
-    addWrite(
-      matrixPath,
-      rewriteVersionsMatrix(fs.readFileSync(matrixPath, 'utf8'), {
-        dshVersion,
-        pluginVersion,
-        branch: args.branch ?? 'main',
-      }),
-    )
-  }
+  const matrixText = fs.existsSync(matrixPath) ? fs.readFileSync(matrixPath, 'utf8') : null
+  // The ledger first, so the README table can copy its rows.
+  const nextMatrix = matrixText === null
+    ? null
+    : rewriteVersionsMatrix(matrixText, {
+      dshVersion,
+      pluginVersion,
+      branch: args.branch ?? 'main',
+    })
+  if (nextMatrix !== null) addWrite(matrixPath, nextMatrix)
+  addWrite(
+    readmePath,
+    rewriteReadmeMatrix(
+      rewriteReadme(fs.readFileSync(readmePath, 'utf8'), dshVersion),
+      nextMatrix ?? '',
+    ),
+  )
 
   for (const file of collectDocFiles()) {
     const previous = fs.readFileSync(file, 'utf8')
