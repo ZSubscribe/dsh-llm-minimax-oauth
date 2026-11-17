@@ -1,7 +1,7 @@
 # dsh-llm-minimax-oauth
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.3-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-green)](https://nodejs.org)
 [![OAuth](https://img.shields.io/badge/OAuth-2.0%20PKCE-blue)](https://datatracker.ietf.org/doc/html/rfc8628)
 [![Platform](https://img.shields.io/badge/MiniMax-Global%20%7C%20CN-orange)](https://platform.minimax.io)
@@ -49,7 +49,7 @@ separate route ids so the two authentication channels never collide.
 
 ## Prerequisites
 
-- **DeepSeek Harness** `0.2.2-rc.3` (this build targets exactly this
+- **DeepSeek Harness** `0.2.2-rc.1` (this build targets exactly this
   harness version — the harness refuses a plugin whose declared DSH
   requirement does not match the running runtime; see
   [Versions](#versions) for the build that matches yours)
@@ -75,6 +75,7 @@ installation), then take the build that matches it:
 | DSH version | Plugin version | Git tag | Branch |
 | --- | --- | --- | --- |
 | `0.2.2-rc.3` | `0.2.2-rc.3` | `v0.2.2-rc.3` | `main` |
+| `0.2.2-rc.1` | `0.2.2-rc.1` | `v0.2.2-rc.1` | `release/dsh-0.2.2-rc.1` |
 
 Install the matching build by pinning its tag:
 
@@ -87,7 +88,7 @@ The full matrix, including older builds, lives in
 
 ## Harness compatibility
 
-This plugin targets **DeepSeek Harness `0.2.2-rc.3`**. The `0.2.x` line
+This plugin targets **DeepSeek Harness `0.2.2-rc.1`**. The `0.2.x` line
 changed the LLM message model, and the adapter is written against the new
 vocabulary:
 

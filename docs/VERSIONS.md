@@ -16,6 +16,7 @@ DeepSeek Harness installation.
 | DSH version | Plugin version | Git tag | Branch |
 | --- | --- | --- | --- |
 | `0.2.2-rc.3` | `0.2.2-rc.3` | `v0.2.2-rc.3` | `main` |
+| `0.2.2-rc.1` | `0.2.2-rc.1` | `v0.2.2-rc.1` | `release/dsh-0.2.2-rc.1` |
 
 ## Installing a specific build
 
