@@ -53,7 +53,14 @@ jobs:
         run: |
           mkdir -p dist
           npm pack --pack-destination dist
-          mv dist/*.tgz "dist/dsh-llm-minimax-oauth-${GITHUB_REF_NAME#v}.tgz"
+          # `npm pack` already names the tarball `<name>-<version>.tgz`, and the
+          # plugin version is the harness version — only rename when it differs.
+          for archive in dist/*.tgz; do
+            wanted="dist/dsh-llm-minimax-oauth-${GITHUB_REF_NAME#v}.tgz"
+            if [ "$archive" != "$wanted" ]; then
+              mv "$archive" "$wanted"
+            fi
+          done
 
       - name: Publish the GitHub release
         env:
