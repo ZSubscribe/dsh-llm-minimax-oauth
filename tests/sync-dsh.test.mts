@@ -53,6 +53,17 @@ test('rewriteReadme updates badge, prerequisite, target and release line', () =>
   assert.doesNotMatch(out, /0\.2\.1-rc\.5/)
 })
 
+test('rewriteReadme pins the install command to the build it documents', () => {
+  const readme = [
+    'dsh plugin --profile web add "https://github.com/ZSubscribe/dsh-llm-minimax-oauth.git#v0.2.2-rc.1"',
+  ].join('\n')
+
+  const after = rewriteReadme(readme, '0.2.2-rc.3')
+
+  assert.ok(after.includes('#v0.2.2-rc.3"'))
+  assert.ok(!after.includes('#v0.2.2-rc.1"'))
+})
+
 test('rewriteDocVersions only touches DSH version references', () => {
   const bt = String.fromCharCode(96)
   const before = [
