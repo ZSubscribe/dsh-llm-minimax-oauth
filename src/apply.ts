@@ -73,7 +73,7 @@ import {
   MINIMAX_REGION_GLOBAL,
   type MiniMaxProviderProfile,
 } from './const.ts'
-import { MiniMaxAdapter, type SerializedToken } from './adapter.ts'
+import { MiniMaxAdapter, type MiniMaxAttachmentStore, type SerializedToken } from './adapter.ts'
 
 /**
  * Largest request body the OAuth endpoints accept.
@@ -337,12 +337,21 @@ export async function apply(ctx: Context) {
   // var and uses a Bearer token + the Anthropic Messages wire format; the
   // built-in `pi-ai` `minimax` route (which sends `x-api-key`) is untouched
   // and remains available for the API-key path.
+  //
+  // The host's attachment service is handed to the adapter as a resolver:
+  // the service owns the image bytes, and the adapter asks it for the exact
+  // request version of one image. The service is optional — a host that
+  // mounts none simply has no image route, and the adapter then reports an
+  // unsupported image instead of sending a request without it.
+  const resolveAttachments = (): MiniMaxAttachmentStore | undefined =>
+    ctx.get('attachments') as MiniMaxAttachmentStore | undefined
   for (const profile of DEFAULT_PROVIDER_PROFILES) {
     const adapter = new MiniMaxAdapter({
       envVar: profile.envVar,
       providerId: profile.id,
       displayName: `${profile.label} OAuth`,
       store,
+      resolveAttachments,
     })
     ctx.llm.registerAdapter([profile.id], adapter)
   }

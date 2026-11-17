@@ -34,15 +34,21 @@
  */
 
 import {
+  IMAGE_OFFLOAD_REQUIRED_CODE,
   LlmAdapter,
   LlmError,
+  ReasoningEffortId,
   ToolCallId,
+  offloadedImageText,
+  requestImageHandleText,
+  requiredImageOffload,
 } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   FinishReason,
   GenerateOptions,
   LlmModelInfo,
+  LlmModelReasoningInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
   RequestMessage,
@@ -62,6 +68,7 @@ import {
   MINIMAX_OAUTH_CLIENT_ID,
   MINIMAX_OAUTH_HTTP_TIMEOUT_SECONDS,
   MINIMAX_ANTHROPIC_VERSION,
+  MINIMAX_REASONING_EFFORTS,
 } from './const.ts'
 import { FileCredentialStore, MiniMaxOAuthError } from './store.ts'
 
@@ -194,6 +201,13 @@ interface AnthropicImagePart {
   source: { type: 'base64'; media_type: string; data: string }
 }
 
+/** Anthropic Messages wire `thinking` part (assistant replay). */
+interface AnthropicThinkingPart {
+  type: 'thinking'
+  thinking: string
+  signature?: string
+}
+
 /** Anthropic Messages wire `tool_use` part. */
 interface AnthropicToolUsePart {
   type: 'tool_use'
@@ -206,7 +220,7 @@ interface AnthropicToolUsePart {
 interface AnthropicToolResultPart {
   type: 'tool_result'
   tool_use_id: string
-  content: AnthropicTextPart[] | string
+  content: Array<AnthropicTextPart | AnthropicImagePart> | string
   is_error?: boolean
 }
 
@@ -214,6 +228,7 @@ interface AnthropicToolResultPart {
 type AnthropicContentPart =
   | AnthropicTextPart
   | AnthropicImagePart
+  | AnthropicThinkingPart
   | AnthropicToolUsePart
   | AnthropicToolResultPart
 
@@ -222,6 +237,17 @@ interface AnthropicTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
+}
+
+/** Anthropic Messages thinking configuration. */
+interface AnthropicThinking {
+  type: 'adaptive' | 'enabled' | 'disabled'
+  budget_tokens?: number
+}
+
+/** Anthropic Messages reasoning-effort configuration. */
+interface AnthropicOutputConfig {
+  effort: string
 }
 
 /** Anthropic Messages request body. */
@@ -234,6 +260,139 @@ interface AnthropicRequest {
   tools?: AnthropicTool[]
   temperature?: number
   stop_sequences?: string[]
+  thinking?: AnthropicThinking
+  output_config?: AnthropicOutputConfig
+}
+
+/**
+ * The attachment reference this route reads image bytes from.
+ *
+ * The harness owns the durable attachment vocabulary (`@deepseek-ai/dsh-attachment`),
+ * but `@deepseek-ai/dsh-llm` imports those types without re-exporting them, and
+ * adding a direct dependency on the attachment package would pin this plugin
+ * to one harness generation. The route therefore derives the type from the
+ * harness' own image helper, which every harness line exports: the attachment
+ * service is provided by the host, and this description stays valid across
+ * harness generations.
+ */
+type MiniMaxImageRef = Parameters<typeof requestImageHandleText>[0]
+
+/** The request-image projection this route asks the attachment service for. */
+type MiniMaxImageTarget = ReturnType<LlmAdapter['imageRequestTarget']>
+
+/**
+ * The request-image variant this route receives from the attachment service.
+ *
+ * Structurally the harness' `RequestImageAttachment`: the exact bytes for one
+ * request plus the display metadata the handle text names.
+ */
+interface MiniMaxRequestImage {
+  data: Uint8Array
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+}
+
+/**
+ * The attachment service this route reads images through.
+ *
+ * The host provides `ctx.attachments`; the route only needs the one method it
+ * calls, so the service is described structurally rather than imported.
+ */
+export interface MiniMaxAttachmentStore {
+  readImageRequest(
+    ref: MiniMaxImageRef,
+    target: MiniMaxImageTarget,
+    signal?: AbortSignal,
+  ): Promise<MiniMaxRequestImage>
+}
+
+/** Resolves the attachment service, if the host provides one. */
+export type MiniMaxAttachmentResolver = () => MiniMaxAttachmentStore | undefined
+
+/**
+ * Request-image budget of this route.
+ *
+ * MiniMax accepts base64 image sources, so the route accounts the encoded
+ * length. The limits mirror the harness' own `pi-ai` route: 1 MiB per image,
+ * 50 images per request, and a 2048x2048 pixel budget, which is the pixel
+ * limit the MiniMax provider data documents for its image models.
+ */
+const MINIMAX_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
+const MINIMAX_REQUEST_IMAGE_MAX_IMAGES = 50
+const MINIMAX_REQUEST_IMAGE_MAX_PIXELS = 2048 * 2048
+
+/**
+ * Scale one image to the route's pixel budget.
+ *
+ * The attachment service does the resizing; the route only states the
+ * dimensions it is willing to send, so an oversized image reaches the model
+ * as a smaller preview instead of an oversized payload.
+ * @param width - the stored image's width in pixels.
+ * @param height - the stored image's height in pixels.
+ * @returns the dimensions to request, never larger than the source.
+ */
+function projectImageDimensions(
+  width: number,
+  height: number,
+): { width: number; height: number } {
+  const total = width * height
+  if (total <= MINIMAX_REQUEST_IMAGE_MAX_PIXELS || total === 0) return { width, height }
+  const scale = Math.sqrt(MINIMAX_REQUEST_IMAGE_MAX_PIXELS / total)
+  if (width >= height) {
+    const projectedWidth = Math.max(1, Math.floor(width * scale))
+    return {
+      width: projectedWidth,
+      height: Math.max(1, Math.round((projectedWidth * height) / width)),
+    }
+  }
+  const projectedHeight = Math.max(1, Math.floor(height * scale))
+  return {
+    width: Math.max(1, Math.round((projectedHeight * width) / height)),
+    height: projectedHeight,
+  }
+}
+
+/** One request image, keyed by the durable attachment id it was read from. */
+interface MiniMaxPreparedImage extends MiniMaxRequestImage {
+  attachmentId: string
+}
+
+/**
+ * Read every image occurrence of a request through the attachment service.
+ *
+ * The service returns the exact bytes for one request version, so the same
+ * attachment read twice yields the same image and is read once.
+ * @param messages - the request history.
+ * @param attachments - the host's attachment service.
+ * @param signal - cancellation for the read.
+ * @returns the prepared images, keyed by attachment id.
+ */
+async function prepareRequestImages(
+  messages: readonly RequestMessage[],
+  attachments: MiniMaxAttachmentStore,
+  signal?: AbortSignal,
+): Promise<Map<string, MiniMaxPreparedImage>> {
+  const refs = new Map<string, MiniMaxImageRef>()
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type !== 'image') continue
+      if (block.offloaded === true) continue
+      refs.set(block.attachment.attachmentId, block.attachment)
+    }
+  }
+  const prepared = new Map<string, MiniMaxPreparedImage>()
+  for (const [attachmentId, ref] of refs) {
+    const dimensions = projectImageDimensions(ref.width, ref.height)
+    const image = await attachments.readImageRequest(
+      ref,
+      { ...dimensions, maxBytes: MINIMAX_REQUEST_IMAGE_MAX_BYTES },
+      signal,
+    )
+    prepared.set(attachmentId, { ...image, attachmentId })
+  }
+  return prepared
 }
 
 /**
@@ -256,15 +415,25 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
-/** Serialize one harness `ContentBlock` to an Anthropic content part. */
-function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
+/**
+ * Serialize one harness `ContentBlock` to an Anthropic content part.
+ *
+ * Text and tool calls map one-to-one. Reasoning maps to an Anthropic
+ * `thinking` part when the caller supplies the provider's signature (the
+ * signature is what lets the provider validate the replayed chain), and to
+ * plain text otherwise. Images and files are handled by the caller, which
+ * owns the attachment bytes.
+ */
+function contentBlockToPart(block: ContentBlock, signature?: string): AnthropicContentPart {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text }
     case 'reasoning':
       // Reasoning content is a model artifact; fold it into the assistant
       // turn verbatim so the next round of the conversation keeps the chain.
-      return { type: 'text', text: block.text }
+      return signature === undefined
+        ? { type: 'text', text: block.text }
+        : { type: 'thinking', thinking: block.text, signature }
     case 'tool-call':
       return {
         type: 'tool_use',
@@ -274,7 +443,7 @@ function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
       }
     case 'image':
       throw new LlmError(
-        'MiniMax OAuth adapter does not support inline image content; use the attachment service.',
+        'MiniMax OAuth adapter cannot serialize an image block without the attachment service.',
         'UNSUPPORTED_CONTENT',
       )
     case 'file':
@@ -290,6 +459,33 @@ function contentBlockToPart(block: ContentBlock): AnthropicContentPart {
         'UNSUPPORTED_CONTENT',
       )
   }
+}
+
+/**
+ * Serialize one image block to the Anthropic wire form.
+ *
+ * MiniMax accepts base64 image sources, which is what this route sends. The
+ * handle text names the exact request image so the model can refer to it, and
+ * the image itself follows as a separate part.
+ * @param block - the harness image block.
+ * @param image - the request image read for that occurrence.
+ * @returns the wire parts: the handle text and the image.
+ */
+function imageBlockToParts(
+  block: Extract<ContentBlock, { type: 'image' }>,
+  image: MiniMaxPreparedImage,
+): AnthropicContentPart[] {
+  return [
+    { type: 'text', text: requestImageHandleText(block.attachment, image) },
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mediaType,
+        data: Buffer.from(image.data).toString('base64'),
+      },
+    },
+  ]
 }
 
 /** Join the text blocks of one harness message. */
@@ -358,6 +554,65 @@ function toolResultToPart(message: ToolResultMessage): AnthropicToolResultPart {
 }
 
 /**
+ * The replay envelope this route writes for assistant history.
+ *
+ * The harness' `ReasoningBlock` carries the reasoning text but not the
+ * provider's signature, and the signature is what lets MiniMax validate a
+ * replayed thinking chain. The route therefore stores the signature beside
+ * the assembled blocks in the envelope the harness attaches to the assistant
+ * message, and reads it back when the next request replays that message.
+ */
+const MINIMAX_REPLAY_KIND = 'minimax-anthropic'
+
+/** One entry of the per-block half of this route's replay envelope. */
+interface MiniMaxReplayBlock {
+  type: 'text' | 'reasoning' | 'tool-call'
+  /** The provider's thinking signature, for a reasoning block. */
+  thinkingSignature?: string
+}
+
+/** The response-level half of this route's replay envelope. */
+interface MiniMaxReplayResponse {
+  kind: typeof MINIMAX_REPLAY_KIND
+  version: 1
+  provider: string
+  model: string
+}
+
+/**
+ * The replay envelope this route writes.
+ *
+ * The harness' `ReplayEnvelope` names the two halves `response` and `blocks`;
+ * the per-block half must have exactly one entry per emitted block, in
+ * first-seen stream order, or the harness discards the whole envelope.
+ */
+interface MiniMaxReplayEnvelope {
+  response: MiniMaxReplayResponse
+  blocks: MiniMaxReplayBlock[]
+}
+
+/**
+ * Read the per-block replay metadata of one assistant message.
+ *
+ * The envelope belongs to the route that produced it; a message that another
+ * adapter produced carries foreign state, and the harness strips that before
+ * dispatch anyway.
+ * @param message - the request history entry.
+ * @returns the per-block metadata, when this route produced the message.
+ */
+function replayBlocksOf(message: RequestMessage): readonly MiniMaxReplayBlock[] | undefined {
+  if (message.role !== 'assistant') return undefined
+  const state: unknown = message.source.replayState
+  if (state === null || typeof state !== 'object') return undefined
+  const envelope = state as { response?: unknown; blocks?: unknown }
+  const response = envelope.response
+  if (response === null || typeof response !== 'object') return undefined
+  if ((response as { kind?: unknown }).kind !== MINIMAX_REPLAY_KIND) return undefined
+  if (!Array.isArray(envelope.blocks)) return undefined
+  return envelope.blocks as MiniMaxReplayBlock[]
+}
+
+/**
  * Convert the harness request history into Anthropic Messages wire messages.
  *
  * Role mapping:
@@ -369,20 +624,85 @@ function toolResultToPart(message: ToolResultMessage): AnthropicToolResultPart {
  *   - `developer` → dropped. This route declares no `toolUpdate`, so the
  *                   harness sends the complete tool list on every request and
  *                   the developer blocks carry no extra information.
+ *
+ * Image occurrences become the handle text plus the base64 image. Occurrences
+ * the surface marked `offloaded` are replaced with the harness' own
+ * placeholder, so an omitted image stays visible to the model as an omission
+ * rather than disappearing.
+ *
+ * @param messages - the request history.
+ * @param images - the prepared request images, keyed by attachment id.
+ * @returns the wire messages.
  */
-function toAnthropicMessages(messages: readonly RequestMessage[]): AnthropicRequest['messages'] {
+function toAnthropicMessages(
+  messages: readonly RequestMessage[],
+  images: ReadonlyMap<string, MiniMaxPreparedImage>,
+): AnthropicRequest['messages'] {
   const out: AnthropicRequest['messages'] = []
   for (const message of messages) {
     switch (message.role) {
       case 'user':
-        out.push({ role: 'user', content: message.content.map(contentBlockToPart) })
+      case 'assistant': {
+        const replay = replayBlocksOf(message)
+        const parts: AnthropicContentPart[] = []
+        message.content.forEach((block, position) => {
+          if (block.type === 'image') {
+            const image = images.get(block.attachment.attachmentId)
+            if (image === undefined) {
+              if (block.offloaded === true) {
+                // The surface dropped this occurrence to fit a request limit.
+                // The harness' placeholder says exactly that.
+                parts.push({ type: 'text', text: offloadedImageText(block.attachment) })
+                return
+              }
+              // The occurrence is still part of the request but the route has
+              // no bytes for it. Sending it as a placeholder would quietly
+              // change what the user asked, so the request fails instead.
+              throw new LlmError(
+                'MiniMax OAuth adapter cannot serialize an image block without the attachment service.',
+                'UNSUPPORTED_CONTENT',
+              )
+            }
+            parts.push(...imageBlockToParts(block, image))
+            return
+          }
+          if (block.type === 'reasoning') {
+            const signature = replay?.[position]?.thinkingSignature
+            parts.push(contentBlockToPart(block, signature))
+            return
+          }
+          parts.push(contentBlockToPart(block))
+        })
+        if (parts.length === 0) continue
+        out.push({
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          content: parts,
+        })
         break
-      case 'assistant':
-        out.push({ role: 'assistant', content: message.content.map(contentBlockToPart) })
+      }
+      case 'tool': {
+        const parts: AnthropicContentPart[] = []
+        for (const block of message.content) {
+          if (block.type === 'image') {
+            const image = images.get(block.attachment.attachmentId)
+            if (image === undefined) {
+              if (block.offloaded === true) {
+                parts.push({ type: 'text', text: offloadedImageText(block.attachment) })
+                continue
+              }
+              throw new LlmError(
+                'MiniMax OAuth adapter cannot serialize an image block without the attachment service.',
+                'UNSUPPORTED_CONTENT',
+              )
+            }
+            parts.push(...imageBlockToParts(block, image))
+            continue
+          }
+        }
+        parts.push(toolResultToPart(message))
+        out.push({ role: 'user', content: parts })
         break
-      case 'tool':
-        out.push({ role: 'user', content: [toolResultToPart(message)] })
-        break
+      }
       case 'developer':
         break
       default:
@@ -393,14 +713,57 @@ function toAnthropicMessages(messages: readonly RequestMessage[]): AnthropicRequ
 }
 
 /**
+ * Build the thinking configuration for one request.
+ *
+ * MiniMax's `MiniMax-M3.1-Flash` requires adaptive thinking and rejects
+ * `thinking.type="disabled"` with HTTP 400, while the other models accept it.
+ * Because the route cannot know which model a caller will pick before the
+ * request is built, it always asks for adaptive thinking: the provider then
+ * decides whether to think, and no model rejects the request.
+ * @returns the wire thinking configuration.
+ */
+function thinkingConfiguration(): AnthropicThinking {
+  return { type: 'adaptive' }
+}
+
+/**
+ * Build the reasoning-effort configuration for one request.
+ *
+ * MiniMax accepts `low`, `medium`, `high`, `xhigh` and `max`, and rejects any
+ * other value with HTTP 400. The provider treats the effort as a hint, so an
+ * effort outside that set is dropped rather than sent.
+ * @param effort - the effort the caller selected, if any.
+ * @returns the wire effort configuration, when the effort is one MiniMax accepts.
+ */
+function outputConfiguration(effort: string | undefined): AnthropicOutputConfig | undefined {
+  if (effort === undefined) return undefined
+  if (!MINIMAX_REASONING_EFFORTS.includes(effort)) return undefined
+  return { effort }
+}
+
+/**
  * Serialize the harness request to the Anthropic Messages body.
  *
  * Tool declarations follow the built-in `pi-ai` adapter: a tool marked
  * `deferLoading` is not part of the wire declaration list, because its
  * schema is activated by a developer event instead.
+ *
+ * The temperature is left out: MiniMax enables thinking on this route, and a
+ * request that asks for thinking and a temperature at the same time is not
+ * portable across the Anthropic-compatible endpoints this route serves.
+ *
+ * @param options - the harness request.
+ * @param system - the merged system prompt.
+ * @param messages - the request history without the system prompt.
+ * @param images - the prepared request images, keyed by attachment id.
+ * @returns the wire request body.
  */
-function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
-  const { system, messages } = splitSystemPrompt(options)
+function serializeAnthropicRequest(
+  options: GenerateOptions,
+  system: string | undefined,
+  messages: readonly RequestMessage[],
+  images: ReadonlyMap<string, MiniMaxPreparedImage>,
+): AnthropicRequest {
   const tools: AnthropicTool[] | undefined = options.tools
     ?.filter((tool) => tool.deferLoading !== true)
     .map((tool) => ({
@@ -408,15 +771,17 @@ function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
       ...(tool.description ? { description: tool.description } : {}),
       input_schema: tool.parameters,
     }))
+  const effort = outputConfiguration(options.reasoningEffort)
   return {
     model: options.model,
     ...(system !== undefined ? { system } : {}),
-    messages: toAnthropicMessages(messages),
+    messages: toAnthropicMessages(messages, images),
     max_tokens: options.maxTokens ?? MINIMAX_DEFAULT_MAX_TOKENS,
     stream: true,
     ...(tools !== undefined && tools.length > 0 ? { tools } : {}),
-    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.stop !== undefined && options.stop.length > 0 ? { stop_sequences: options.stop } : {}),
+    thinking: thinkingConfiguration(),
+    ...(effort === undefined ? {} : { output_config: effort }),
   }
 }
 
@@ -576,12 +941,14 @@ function assertValidToolArguments(name: string, argumentsText: string): void {
 /** One open content block under assembly. */
 interface OpenBlock {
   index: number
-  kind: 'text' | 'tool-call'
+  kind: 'text' | 'reasoning' | 'tool-call'
   text: string
   toolId: string
   toolName: string
   /** The `input` object the provider sent with `content_block_start`. */
   startInput: string
+  /** The provider's thinking signature, for a reasoning block. */
+  signature: string
 }
 
 interface SseEvent {
@@ -666,6 +1033,7 @@ export class MiniMaxAdapter extends LlmAdapter {
   private readonly providerId: string
   private readonly displayName: string
   private readonly store: FileCredentialStore | undefined
+  private readonly resolveAttachments: MiniMaxAttachmentResolver | undefined
 
   constructor(
     options: {
@@ -673,6 +1041,15 @@ export class MiniMaxAdapter extends LlmAdapter {
       providerId?: string
       displayName?: string
       store?: FileCredentialStore
+      /**
+       * Resolves the host's attachment service.
+       *
+       * The service owns the image bytes; the adapter only asks it for the
+       * exact request version of one image. Without the service the route
+       * cannot inline an image, and a request that carries one fails with
+       * `UNSUPPORTED_CONTENT` instead of silently dropping the picture.
+       */
+      resolveAttachments?: MiniMaxAttachmentResolver
     } = {},
   ) {
     super()
@@ -680,10 +1057,31 @@ export class MiniMaxAdapter extends LlmAdapter {
     this.providerId = options.providerId ?? MINIMAX_PROVIDER_ID
     this.displayName = options.displayName ?? 'MiniMax (OAuth)'
     this.store = options.store
+    this.resolveAttachments = options.resolveAttachments
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
     return { id: provider, name: this.displayName }
+  }
+
+  /**
+   * The request-image dimensions and byte target of one image.
+   *
+   * The route sends images as base64, so the budget is stated in the encoded
+   * length the wire body actually carries, and the pixel budget keeps an
+   * oversized picture from becoming an oversized payload.
+   * @param provider - the provider route that owns the model.
+   * @param model - the model the image is sent to.
+   * @param image - the durable image reference.
+   * @returns the dimensions and byte target the attachment service should honor.
+   */
+  override imageRequestTarget(
+    _provider: string,
+    _model: string,
+    image: MiniMaxImageRef,
+  ): MiniMaxImageTarget {
+    const dimensions = projectImageDimensions(image.width, image.height)
+    return { ...dimensions, maxBytes: MINIMAX_REQUEST_IMAGE_MAX_BYTES }
   }
 
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
@@ -709,17 +1107,32 @@ export class MiniMaxAdapter extends LlmAdapter {
     }
   }
 
+  /**
+   * The reasoning efforts MiniMax accepts.
+   *
+   * The provider rejects an unknown effort with HTTP 400, so the route only
+   * advertises the values it is willing to send.
+   */
+  private reasoningInfo(): LlmModelReasoningInfo {
+    return {
+      efforts: MINIMAX_REASONING_EFFORTS.map((effort) => ({
+        id: ReasoningEffortId(effort),
+        name: effort,
+      })),
+      defaultEffort: ReasoningEffortId('medium'),
+    }
+  }
+
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     return Promise.resolve(MINIMAX_DEFAULT_MODEL_CATALOG.map((entry) => {
       const info: LlmModelInfo = {
         provider,
         id: entry.id,
         name: entry.name,
-        // This route serializes text only: the adapter has no access to the
-        // attachment service, so an image cannot be inlined. Declaring the
-        // modality lets the harness project images to deterministic text
-        // instead of failing the request outright.
-        inputModalities: ['text'],
+        // MiniMax's M3 models accept images; the M2.7 line is text only. The
+        // declaration is what lets the harness hand a real image block to
+        // this route instead of projecting it to text.
+        inputModalities: entry.inputModalities,
       }
       if (entry.description !== undefined) {
         return { ...info, description: entry.description }
@@ -738,11 +1151,12 @@ export class MiniMaxAdapter extends LlmAdapter {
       provider,
       id: model,
       name: configured?.name ?? model,
-      inputModalities: ['text'],
+      inputModalities: configured?.inputModalities ?? ['text'],
       context: {
         contextWindow: configured?.contextWindow ?? MINIMAX_DEFAULT_CONTEXT_WINDOW,
       },
       defaultMaxTokens: configured?.maxTokens ?? MINIMAX_DEFAULT_MAX_TOKENS,
+      reasoning: this.reasoningInfo(),
     }
     if (configured?.description !== undefined) {
       return Promise.resolve({ ...info, description: configured.description })
@@ -789,7 +1203,9 @@ export class MiniMaxAdapter extends LlmAdapter {
       )
     }
     const { token } = await this.resolveAccessToken()
-    const body = serializeAnthropicRequest(options)
+    const { system, messages } = splitSystemPrompt(options)
+    const images = await this.prepareImages(messages, options.signal)
+    const body = serializeAnthropicRequest(options, system, messages, images)
     const url = `${token.inference_base_url.replace(/\/+$/, '')}/v1/messages`
     const response = await fetch(url, {
       method: 'POST',
@@ -811,6 +1227,10 @@ export class MiniMaxAdapter extends LlmAdapter {
     }
     const events = sseStream(response, options.signal ?? new AbortController().signal)
     const open: Map<number, OpenBlock> = new Map()
+    /** The per-block replay metadata, in first-seen block order. */
+    const replayBlocks: MiniMaxReplayBlock[] = []
+    /** The block index each replay entry belongs to. */
+    const replayIndexes: number[] = []
     let usage: TokenUsage | undefined
     let emittedUsage = false
     let finish: FinishReason | undefined
@@ -841,11 +1261,21 @@ export class MiniMaxAdapter extends LlmAdapter {
             | { type?: string; text?: string; id?: string; name?: string; input?: unknown }
             | undefined
           if (block?.type === 'text') {
-            open.set(index, { index, kind: 'text', text: block.text ?? '', toolId: '', toolName: '', startInput: '' })
+            open.set(index, { index, kind: 'text', text: block.text ?? '', toolId: '', toolName: '', startInput: '', signature: '' })
+            replayBlocks.push({ type: 'text' })
+            replayIndexes.push(index)
             yield { type: 'block-start', index, blockType: 'text' }
             if ((block.text ?? '').length > 0) {
               yield { type: 'text-delta', index, text: block.text as string }
             }
+          } else if (block?.type === 'thinking') {
+            // MiniMax emits its reasoning as a `thinking` block. The harness
+            // models that as a reasoning block, so the text travels as a
+            // reasoning delta and stays visible in the transcript.
+            open.set(index, { index, kind: 'reasoning', text: '', toolId: '', toolName: '', startInput: '', signature: '' })
+            replayBlocks.push({ type: 'reasoning' })
+            replayIndexes.push(index)
+            yield { type: 'block-start', index, blockType: 'reasoning' }
           } else if (block?.type === 'tool_use') {
             open.set(index, {
               index,
@@ -857,18 +1287,39 @@ export class MiniMaxAdapter extends LlmAdapter {
               // event and no `input_json_delta` at all. Remember it so the
               // block never ends up with empty arguments.
               startInput: serializeToolInput(block.input),
+              signature: '',
             })
+            replayBlocks.push({ type: 'tool-call' })
+            replayIndexes.push(index)
             yield { type: 'block-start', index, blockType: 'tool-call' }
           }
           break
         }
         case 'content_block_delta': {
           const index = Number(payload.index)
-          const delta = payload.delta as { type?: string; text?: string; partial_json?: string } | undefined
+          const delta = payload.delta as
+            | { type?: string; text?: string; partial_json?: string; thinking?: string; signature?: string }
+            | undefined
           const current = open.get(index)
           if (delta?.type === 'text_delta' && current?.kind === 'text' && delta.text !== undefined) {
             current.text += delta.text
             yield { type: 'text-delta', index, text: delta.text }
+          } else if (
+            delta?.type === 'thinking_delta'
+            && current?.kind === 'reasoning'
+            && delta.thinking !== undefined
+          ) {
+            current.text += delta.thinking
+            yield { type: 'reasoning-delta', index, text: delta.thinking }
+          } else if (
+            delta?.type === 'signature_delta'
+            && current?.kind === 'reasoning'
+            && delta.signature !== undefined
+          ) {
+            // The signature is what lets MiniMax validate the replayed
+            // thinking chain on the next request. It is kept beside the
+            // block and stored in the replay envelope.
+            current.signature = delta.signature
           } else if (delta?.type === 'input_json_delta' && current?.kind === 'tool-call' && delta.partial_json !== undefined) {
             current.text += delta.partial_json
             yield {
@@ -887,6 +1338,17 @@ export class MiniMaxAdapter extends LlmAdapter {
           if (current === undefined) break
           if (current.kind === 'text') {
             yield { type: 'block-end', index, block: { type: 'text', text: current.text } satisfies ContentBlock }
+          } else if (current.kind === 'reasoning') {
+            yield {
+              type: 'block-end',
+              index,
+              block: { type: 'reasoning', text: current.text } satisfies ContentBlock,
+            }
+            const position = replayIndexes.indexOf(index)
+            const replayBlock = position >= 0 ? replayBlocks[position] : undefined
+            if (replayBlock !== undefined && current.signature.length > 0) {
+              replayBlock.thinkingSignature = current.signature
+            }
           } else if (current.kind === 'tool-call') {
             // A provider may deliver the arguments only in the start event.
             // Falling back to it keeps the block from ending up empty.
@@ -911,9 +1373,18 @@ export class MiniMaxAdapter extends LlmAdapter {
           if (delta?.stop_reason !== undefined && delta.stop_reason !== null) {
             finish = mapStopReason(delta.stop_reason)
           }
-          const deltaUsage = payload.usage as { output_tokens?: number } | undefined
+          const deltaUsage = payload.usage as
+            | { output_tokens?: number; output_tokens_details?: { thinking_tokens?: number } }
+            | undefined
           if (deltaUsage?.output_tokens !== undefined) {
             usage = { ...(usage ?? { inputTokens: 0, outputTokens: 0 }), outputTokens: deltaUsage.output_tokens }
+          }
+          const thinkingTokens = deltaUsage?.output_tokens_details?.thinking_tokens
+          if (thinkingTokens !== undefined) {
+            usage = {
+              ...(usage ?? { inputTokens: 0, outputTokens: 0 }),
+              reasoningTokens: thinkingTokens,
+            }
           }
           break
         }
@@ -957,6 +1428,58 @@ export class MiniMaxAdapter extends LlmAdapter {
     yield {
       type: 'finish',
       reason: finish ?? { kind: 'stop' },
+      ...(replayBlocks.length > 0
+        ? {
+            replayState: {
+              response: {
+                kind: MINIMAX_REPLAY_KIND,
+                version: 1,
+                provider: this.providerId,
+                model: options.model,
+              },
+              blocks: replayBlocks,
+            },
+          }
+        : {}),
     }
+  }
+
+  /**
+   * Read the request images of one request through the attachment service.
+   *
+   * The service owns the bytes, so the route asks it for the exact request
+   * version of every image occurrence and then checks the request against
+   * the route's image budget. A request that exceeds the budget fails with
+   * `IMAGE_OFFLOAD_REQUIRED`, naming how many oldest occurrences the surface
+   * has to drop, which is the decision the harness makes, not this route.
+   * @param messages - the request history without the system prompt.
+   * @param signal - cancellation for the read.
+   * @returns the prepared images, keyed by attachment id.
+   */
+  private async prepareImages(
+    messages: readonly RequestMessage[],
+    signal?: AbortSignal,
+  ): Promise<Map<string, MiniMaxPreparedImage>> {
+    const attachments = this.resolveAttachments?.()
+    if (attachments === undefined) return new Map()
+    const images = await prepareRequestImages(messages, attachments, signal)
+    if (images.size === 0) return images
+    const offloadImages = requiredImageOffload(
+      messages,
+      {
+        representation: 'base64',
+        maxBytes: MINIMAX_REQUEST_IMAGE_MAX_BYTES * MINIMAX_REQUEST_IMAGE_MAX_IMAGES,
+        maxImages: MINIMAX_REQUEST_IMAGE_MAX_IMAGES,
+      },
+      (block) => images.get(block.attachment.attachmentId)?.bytes ?? 0,
+    )
+    if (offloadImages > 0) {
+      throw new LlmError(
+        `MiniMax request images exceed the route image budget; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
+        IMAGE_OFFLOAD_REQUIRED_CODE,
+        { offloadImages },
+      )
+    }
+    return images
   }
 }

@@ -98,9 +98,12 @@ test('adapter: listModels exposes M3, M3.1-Flash, M2.7, M2.7-highspeed', async (
   assert.ok(ids.includes('MiniMax-M3.1-Flash'))
   assert.ok(ids.includes('MiniMax-M2.7'))
   assert.ok(ids.includes('MiniMax-M2.7-highspeed'))
-  // The route serializes text only, so it must declare that modality.
+  // MiniMax's M3 line accepts images; the M2.7 line is text only.
   for (const model of models) {
-    assert.deepEqual(model.inputModalities, ['text'], `${model.id} must declare text-only input`)
+    const expected = model.id.startsWith('MiniMax-M3')
+      ? ['text', 'image']
+      : ['text']
+    assert.deepEqual(model.inputModalities, expected, `${model.id} must declare its input modalities`)
   }
 })
 
@@ -110,6 +113,20 @@ test('adapter: resolveModel returns 1M context for M3', async () => {
   assert.equal(info.id, 'MiniMax-M3')
   assert.equal(info.context?.contextWindow, 1_000_000)
   assert.equal(info.defaultMaxTokens, 524_288)
+  assert.deepEqual(info.inputModalities, ['text', 'image'])
+})
+
+test('adapter: resolveModel declares the reasoning efforts MiniMax accepts', async () => {
+  const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+  const info = await adapter.resolveModel(MINIMAX_PROVIDER_ID, 'MiniMax-M3')
+  const efforts = info.reasoning?.efforts.map((effort) => effort.id) ?? []
+  assert.deepEqual(efforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+  assert.equal(info.reasoning?.defaultEffort, 'medium')
+})
+
+test('adapter: resolveModel reports text-only input for the M2.7 line', async () => {
+  const adapter = makeAdapter(MINIMAX_INFERENCE_ENV_VAR)
+  const info = await adapter.resolveModel(MINIMAX_PROVIDER_ID, 'MiniMax-M2.7')
   assert.deepEqual(info.inputModalities, ['text'])
 })
 

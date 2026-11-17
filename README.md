@@ -187,11 +187,28 @@ Both expose `MiniMax-M3` (1M context), `MiniMax-M3.1-Flash` (1M context),
 
 `MiniMax-M3` is the default and recommended for the Coding Plan.
 
-The route is **text-only**. The adapter has no access to the harness
-attachment service, so it declares `inputModalities: ['text']` and the
-harness projects attached images into deterministic text placeholders
-instead of failing the request. An inline image never reaches the
-provider.
+### Input modalities
+
+The route speaks the same content-block vocabulary as MiniMax:
+
+| Modality | Support |
+| --- | --- |
+| Text | Yes |
+| Image | Yes — `MiniMax-M3` and `MiniMax-M3.1-Flash` (`inputModalities: ['text', 'image']`) |
+| Thinking | Yes — every model; `MiniMax-M3.1-Flash` forces thinking on |
+
+Images are read through the harness attachment service (the adapter asks
+the service for the request variant and inlines the bytes as an
+Anthropic `image` part). The M2.7 generation declares
+`inputModalities: ['text']`, so the harness projects attached images into
+deterministic text placeholders instead of failing the request.
+
+The adapter always asks for `thinking: { type: 'adaptive' }` — MiniMax
+rejects `thinking: { type: 'disabled' }` on `MiniMax-M3.1-Flash`. Provider
+thinking comes back as a harness reasoning block, and its signature is
+carried in the replay envelope so a follow-up turn sends the thinking
+back unchanged. Reasoning effort (`low`/`medium`/`high`/`xhigh`/`max`)
+is forwarded as `output_config.effort` when the harness asks for it.
 
 ## Screenshots
 

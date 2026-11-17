@@ -42,7 +42,12 @@ export { runAuthorization, startAuthorization, waitForToken, generatePkcePair, r
 export type { DeviceCodeResponse, PollOptions, AuthorizationResult, AuthorizationStart } from './oauth.ts'
 
 export { MiniMaxAdapter, readSerializedToken } from './adapter.ts'
-export type { SerializedToken } from './adapter.ts'
+export type {
+  MiniMaxAttachmentResolver,
+  MiniMaxAttachmentStore,
+  MiniMaxFailureCode,
+  SerializedToken,
+} from './adapter.ts'
 
 /**
  * Brand constructors for the harness message vocabulary.
