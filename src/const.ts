@@ -83,6 +83,15 @@ export const MINIMAX_DEFAULT_MAX_TOKENS = 8192
 /** Default context window for an unconfigured model. */
 export const MINIMAX_DEFAULT_CONTEXT_WINDOW = 1_000_000
 
+/**
+ * Request modalities one MiniMax model accepts on this route.
+ *
+ * The vocabulary is the harness' own (`'text'` and `'image'`), spelled out
+ * locally so the catalog does not depend on a harness type that only exists
+ * from `0.2.2-rc.3` on.
+ */
+export type MiniMaxModelModality = 'text' | 'image'
+
 /** Per-model metadata advertised by `MiniMaxAdapter.listModels`. */
 export interface MiniMaxCatalogModel {
   id: string
@@ -90,7 +99,33 @@ export interface MiniMaxCatalogModel {
   description?: string
   contextWindow: number
   maxTokens: number
+  /**
+   * Request modalities the model accepts.
+   *
+   * `'image'` means the route can inline the stored image bytes as an
+   * Anthropic `image` part; a text-only model makes the harness project
+   * images to deterministic text before the request reaches the adapter.
+   */
+  inputModalities: readonly MiniMaxModelModality[]
 }
+
+/**
+ * Reasoning efforts this route exposes to the harness.
+ *
+ * MiniMax accepts `low`, `medium`, `high`, `xhigh` and `max` in
+ * `output_config.effort`; every other value is rejected with HTTP 400
+ * (`invalid reasoning_effort: "..." (allowed: low, medium, high, xhigh, max)`).
+ * The provider treats the effort as a hint rather than a guarantee, so the
+ * route always requests adaptive thinking and forwards the selected effort
+ * only when it is one of these.
+ */
+export const MINIMAX_REASONING_EFFORTS: readonly string[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]
 
 /**
  * Default model catalog for the MiniMax Coding Plan OAuth (Global and CN).
@@ -103,9 +138,10 @@ export interface MiniMaxCatalogModel {
  * both read from this array.
  *
  * The catalog advertises the *provider's* context window and output cap.
- * The route itself is text-only: `MiniMaxAdapter` has no access to the
- * attachment service, so it declares `inputModalities: ['text']` and the
- * harness projects images to deterministic text instead of failing the call.
+ * Input modalities come from the same provider data: the M3 generation
+ * accepts images (the route inlines the stored bytes through the attachment
+ * service), while the M2.7 generation is text-only, so the harness projects
+ * images to deterministic text for those models.
  */
 export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
   {
@@ -114,6 +150,7 @@ export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
     description: 'Latest MiniMax flagship model, 1M context (recommended).',
     contextWindow: 1_000_000,
     maxTokens: 524_288,
+    inputModalities: ['text', 'image'],
   },
   {
     id: 'MiniMax-M3.1-Flash',
@@ -121,6 +158,7 @@ export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
     description: 'Lower-cost M3.1 variant, 1M context.',
     contextWindow: 1_000_000,
     maxTokens: 524_288,
+    inputModalities: ['text', 'image'],
   },
   {
     id: 'MiniMax-M2.7',
@@ -128,6 +166,7 @@ export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
     description: 'Mid-generation MiniMax model with extended thinking.',
     contextWindow: 204_800,
     maxTokens: 131_072,
+    inputModalities: ['text'],
   },
   {
     id: 'MiniMax-M2.7-highspeed',
@@ -135,6 +174,7 @@ export const MINIMAX_DEFAULT_MODEL_CATALOG: readonly MiniMaxCatalogModel[] = [
     description: 'Higher-throughput M2.7 variant.',
     contextWindow: 204_800,
     maxTokens: 131_072,
+    inputModalities: ['text'],
   },
 ]
 
