@@ -39,6 +39,7 @@ import {
   ToolCallId,
 } from '@deepseek-ai/dsh-llm'
 import type {
+  BuiltinLlmFailureCode,
   ContentBlock,
   FinishReason,
   GenerateOptions,
@@ -420,7 +421,46 @@ function serializeAnthropicRequest(options: GenerateOptions): AnthropicRequest {
   }
 }
 
-/** Map an Anthropic stop reason to a harness `FinishReason`. */
+/**
+ * Classify a provider-reported stream error into a built-in failure code.
+ *
+ * The harness routes on the code, so a provider error type must not be
+ * forwarded as one: an overloaded or throttled upstream is retryable, while a
+ * malformed answer is not.
+ * @param errorType - the provider's `error.type`, when it sent one.
+ * @returns the built-in failure code for that error type.
+ */
+function classifyStreamError(errorType: string | undefined): BuiltinLlmFailureCode {
+  switch (errorType) {
+    case 'overloaded_error':
+      return 'SERVER'
+    case 'rate_limit_error':
+      return 'RATE_LIMIT'
+    case 'authentication_error':
+    case 'permission_error':
+      return 'AUTH'
+    case 'invalid_request_error':
+      return 'INVALID_REQUEST'
+    case 'not_found_error':
+      return 'UNKNOWN_MODEL'
+    default:
+      return 'TRANSPORT'
+  }
+}
+
+/**
+ * Map an Anthropic stop reason to a harness `FinishReason`.
+ *
+ * The failure `code` must be one of the harness' built-in LLM failure codes.
+ * The harness re-raises an in-band failure through `LlmError.fromFailure`,
+ * whose constructor rejects an empty code outright, and the harness routes on
+ * the code — so a raw provider stop reason is never usable as one. Every
+ * unrecognized reason therefore maps onto a built-in code, and the reason
+ * itself stays in the message where a human (and the log) can still read it.
+ *
+ * @param reason - the provider's `stop_reason`, possibly empty or unknown.
+ * @returns the harness finish reason for that stop reason.
+ */
 function mapStopReason(reason: string | null | undefined): FinishReason {
   switch (reason) {
     case 'end_turn':
@@ -430,14 +470,80 @@ function mapStopReason(reason: string | null | undefined): FinishReason {
       return { kind: 'tool-calls' }
     case 'max_tokens':
       return { kind: 'max-tokens' }
-    default:
+    case 'pause_turn':
+      // Anthropic's server-side pause is not a failure: the caller resubmits.
+      return { kind: 'stop' }
+    case 'refusal':
+    case 'sensitive':
       return {
         kind: 'error',
         failure: {
-          message: `MiniMax stream stopped unexpectedly: ${reason ?? '<unknown>'}`,
-          code: (reason ?? 'unknown').toUpperCase(),
+          message: `MiniMax refused the request (stop reason "${reason}")`,
+          code: 'UNSUPPORTED_CONTENT',
         },
       }
+    case 'model_context_window_exceeded':
+      return {
+        kind: 'error',
+        failure: {
+          message: 'MiniMax reported that the model context window was exceeded',
+          code: 'CONTEXT_WINDOW_EXCEEDED',
+        },
+      }
+    default: {
+      const detail = reason === undefined || reason === null || reason === ''
+        ? '<empty>'
+        : reason
+      return {
+        kind: 'error',
+        failure: {
+          message: `MiniMax stream stopped with an unexpected stop reason: ${detail}`,
+          code: 'INVALID_RESPONSE',
+        },
+      }
+    }
+  }
+}
+
+/**
+ * Serialize a tool call's `input` object into the harness' raw-arguments
+ * string. The harness keeps tool arguments as the raw JSON text the provider
+ * sent, and a provider may deliver the object either in the start event or as
+ * streamed `input_json_delta` fragments.
+ * @param input - the provider's `input` value, usually an object.
+ * @returns the JSON text, or an empty string when there is no input at all.
+ */
+function serializeToolInput(input: unknown): string {
+  if (input === undefined || input === null) return ''
+  if (typeof input === 'string') return input
+  try {
+    return JSON.stringify(input)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Validate the accumulated tool-call arguments before the harness sees them.
+ *
+ * The harness keeps tool arguments as the raw JSON text the provider sent and
+ * hands that text straight to the tool dispatcher, so an invalid JSON string
+ * would arrive as an unusable call. An empty argument string is valid: it is
+ * what a tool with no arguments looks like.
+ * @param name - the tool name, for the error message.
+ * @param argumentsText - the accumulated raw arguments.
+ * @throws an {@link LlmError} with a built-in code when the arguments are not
+ *   valid JSON.
+ */
+function assertValidToolArguments(name: string, argumentsText: string): void {
+  if (argumentsText.trim() === '') return
+  try {
+    JSON.parse(argumentsText)
+  } catch (error) {
+    throw new LlmError(
+      `MiniMax returned invalid JSON arguments for tool "${name}": ${(error as Error).message}`,
+      'MALFORMED_RESPONSE',
+    )
   }
 }
 
@@ -448,6 +554,8 @@ interface OpenBlock {
   text: string
   toolId: string
   toolName: string
+  /** The `input` object the provider sent with `content_block_start`. */
+  startInput: string
 }
 
 interface SseEvent {
@@ -553,7 +661,26 @@ export class MiniMaxAdapter extends LlmAdapter {
   }
 
   override providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined {
-    return undefined
+    // The host's normal defaults already cover the transient failures this
+    // route can raise (EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT).
+    // `STREAM_CLOSED` is a retry choice of the harness but is not in that
+    // default list, and a truncated MiniMax stream is exactly the case worth
+    // repeating, so it is added here.
+    return {
+      mode: 'normal',
+      maxRetries: 5,
+      retryableCodes: [
+        'EMPTY_RESPONSE',
+        'RATE_LIMIT',
+        'SERVER',
+        'TIMEOUT',
+        'TRANSPORT',
+        'STREAM_CLOSED',
+      ],
+      initialDelayMs: 500,
+      maxDelayMs: 10_000,
+      jitterRatio: 0.1,
+    }
   }
 
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
@@ -662,6 +789,8 @@ export class MiniMaxAdapter extends LlmAdapter {
     let emittedUsage = false
     let finish: FinishReason | undefined
     let errorMessage: string | undefined
+    let errorType: string | undefined
+    let sawTerminalEvent = false
     for await (const event of events) {
       let payload: Record<string, unknown>
       try {
@@ -682,9 +811,11 @@ export class MiniMaxAdapter extends LlmAdapter {
         }
         case 'content_block_start': {
           const index = Number(payload.index)
-          const block = payload.content_block as { type?: string; text?: string; id?: string; name?: string } | undefined
+          const block = payload.content_block as
+            | { type?: string; text?: string; id?: string; name?: string; input?: unknown }
+            | undefined
           if (block?.type === 'text') {
-            open.set(index, { index, kind: 'text', text: block.text ?? '', toolId: '', toolName: '' })
+            open.set(index, { index, kind: 'text', text: block.text ?? '', toolId: '', toolName: '', startInput: '' })
             yield { type: 'block-start', index, blockType: 'text' }
             if ((block.text ?? '').length > 0) {
               yield { type: 'text-delta', index, text: block.text as string }
@@ -696,6 +827,10 @@ export class MiniMaxAdapter extends LlmAdapter {
               text: '',
               toolId: block.id ?? '',
               toolName: block.name ?? '',
+              // Some providers send the whole argument object in the start
+              // event and no `input_json_delta` at all. Remember it so the
+              // block never ends up with empty arguments.
+              startInput: serializeToolInput(block.input),
             })
             yield { type: 'block-start', index, blockType: 'tool-call' }
           }
@@ -727,6 +862,10 @@ export class MiniMaxAdapter extends LlmAdapter {
           if (current.kind === 'text') {
             yield { type: 'block-end', index, block: { type: 'text', text: current.text } satisfies ContentBlock }
           } else if (current.kind === 'tool-call') {
+            // A provider may deliver the arguments only in the start event.
+            // Falling back to it keeps the block from ending up empty.
+            const argumentsText = current.text === '' ? current.startInput : current.text
+            assertValidToolArguments(current.toolName, argumentsText)
             yield {
               type: 'block-end',
               index,
@@ -734,7 +873,7 @@ export class MiniMaxAdapter extends LlmAdapter {
                 type: 'tool-call',
                 id: ToolCallId(current.toolId ?? ''),
                 name: current.toolName ?? '',
-                arguments: current.text,
+                arguments: argumentsText,
               } satisfies ContentBlock,
             }
           }
@@ -753,12 +892,14 @@ export class MiniMaxAdapter extends LlmAdapter {
           break
         }
         case 'message_stop': {
+          sawTerminalEvent = true
           if (finish === undefined) finish = { kind: 'stop' }
           break
         }
         case 'error': {
           const errPayload = payload.error as { message?: string; type?: string } | undefined
           errorMessage = errPayload?.message ?? 'MiniMax stream reported an error.'
+          errorType = errPayload?.type
           break
         }
         default:
@@ -766,7 +907,20 @@ export class MiniMaxAdapter extends LlmAdapter {
       }
     }
     if (errorMessage !== undefined) {
-      throw new LlmError(`MiniMax stream error: ${errorMessage}`, 'TRANSPORT')
+      throw new LlmError(`MiniMax stream error: ${errorMessage}`, classifyStreamError(errorType))
+    }
+    if (finish === undefined && !sawTerminalEvent) {
+      // The provider closed the stream without a terminal event. Reporting a
+      // plain stop here would hide a truncated turn behind an empty answer, so
+      // surface it as a retryable stream failure instead.
+      finish = {
+        kind: 'error',
+        failure: {
+          message:
+            'MiniMax stream ended before the provider sent a completion event; this turn may be incomplete',
+          code: 'STREAM_CLOSED',
+        },
+      }
     }
     if (usage !== undefined && !emittedUsage) {
       // The Anthropic wire format reports no total, so derive it from the
