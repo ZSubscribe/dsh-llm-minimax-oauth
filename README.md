@@ -80,7 +80,7 @@ installation), then take the build that matches it:
 Install the matching build by pinning its tag:
 
 ```sh
-dsh plugin --profile web add "https://github.com/ZSubscribe/dsh-llm-minimax-oauth.git#v0.2.2-rc.3"
+dsh plugin --profile web add "https://github.com/ZSubscribe/dsh-llm-minimax-oauth.git#v0.2.2-rc.1"
 ```
 
 The full matrix, including older builds, lives in
