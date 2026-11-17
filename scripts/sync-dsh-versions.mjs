@@ -101,6 +101,11 @@ export function rewriteReadme(text, dshVersion) {
     /targets \*\*DeepSeek Harness `[^`]+`\*\*/,
     `targets **DeepSeek Harness \`${dshVersion}\`**`,
   )
+  // The install command pins the tag of the build this README belongs to.
+  out = out.replace(
+    /(dsh plugin --profile \S+ add "https:\/\/github\.com\/[^"]+?#)v[^"]+(")/g,
+    `$1v${dshVersion}$2`,
+  )
   return out
 }
 
